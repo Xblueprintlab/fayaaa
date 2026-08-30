@@ -2,8 +2,12 @@ import { clock, frame, frameLoop, init, surface } from "vgpu";
 import type { FrameLoopHandle } from "vgpu";
 import {
   BufferTarget,
+  BlobSource,
+  ALL_FORMATS,
   CanvasSource,
   getEncodableVideoCodecs,
+  Mp4OutputFormat,
+  Input,
   Output,
   Quality,
   WebMOutputFormat,
@@ -15,10 +19,21 @@ import {
   type PlaygroundDialValues,
   type ShowcasePresetId,
 } from "./dialkit-controls";
+import {
+  mountExportDialKit,
+  type ExportDialValues,
+} from "./export-dialkit-controls";
 import { mountMobileControls } from "./mobile-controls";
 import { mountPlayground } from "./playground-page";
 import { EffectTransition, effectLoopTarget, type EffectPhase } from "./effect-transition";
 import { downloadBlob } from "./export-utils";
+import {
+  chooseVideoFormat,
+  clampFrame,
+  exportDimensions,
+  VIDEO_BITRATES,
+  type ExportSettings,
+} from "./export-config";
 import { FireAudio } from "./fire-audio";
 import {
   clearPlaygroundAsset,
@@ -40,15 +55,7 @@ type HeatDirection = number | "full";
 type ShaderBlend = "normal" | "screen" | "add" | "multiply" | "overlay";
 type ImageTreatment = "edge" | "material";
 type AutomaticMaskMode = "alpha" | "dark" | "bright";
-type VideoRatio = "16:9" | "1:1" | "9:16";
-type VideoQuality = "standard" | "high" | "max";
-type VideoExportSettings = {
-  ratio: VideoRatio;
-  fps: 24 | 30 | 60;
-  quality: VideoQuality;
-  frameX: number;
-  frameY: number;
-};
+type VideoExportSettings = ExportSettings;
 type RasterizedSource = {
   canvas: HTMLCanvasElement;
   hasAlpha: boolean;
@@ -125,11 +132,10 @@ type PresentationSnapshot = {
 
 const EXPORT_WIDTH = 1280;
 const EXPORT_HEIGHT = 720;
-const CLIP_SECONDS = 3;
 const VIDEO_QUALITIES = {
-  standard: { edge: 720, bitrate: 6_000_000, label: "720p" },
-  high: { edge: 1080, bitrate: 12_000_000, label: "1080p" },
-  max: { edge: 1440, bitrate: 24_000_000, label: "1440p" },
+  standard: { bitrate: VIDEO_BITRATES.standard, label: "720p" },
+  high: { bitrate: VIDEO_BITRATES.high, label: "1080p" },
+  max: { bitrate: VIDEO_BITRATES.max, label: "1440p" },
 } as const;
 const SHAPE_SOURCE_OPACITY = 0.82;
 const PAPER_SOURCE_OPACITY = 0.9;
@@ -280,6 +286,10 @@ const videoExportModal = required<HTMLElement>("#video-export-modal");
 const videoFramePreview = required<HTMLCanvasElement>("#video-frame-preview");
 const videoExportSummary = required<HTMLOutputElement>("#video-export-summary");
 const videoExportConfirm = required<HTMLButtonElement>(".video-export-confirm");
+const exportProgress = required<HTMLElement>("#export-progress");
+const exportProgressTitle = required<HTMLElement>("#export-progress-title");
+const exportProgressDetail = required<HTMLElement>("#export-progress-detail");
+const exportProgressMeter = required<HTMLProgressElement>("#export-progress-meter");
 const demoShell = required<HTMLElement>("#demo-shell");
 const fileInput = required<HTMLInputElement>("#file");
 const backgroundFileInput = required<HTMLInputElement>("#background-file");
@@ -468,7 +478,12 @@ let backgroundColorController: ((color: string) => void) | undefined;
 let subjectColorController: ((color: string) => void) | undefined;
 let showcasePresetController: ((preset: ShowcasePresetId) => Promise<void>) | undefined;
 let pendingShowcasePreset: ShowcasePresetId | undefined;
-let videoRecorder: ((settings: VideoExportSettings) => Promise<void>) | undefined;
+let videoRecorder: ((settings: VideoExportSettings, signal: AbortSignal) => Promise<void>) | undefined;
+let imageExporter: ((settings: VideoExportSettings, signal: AbortSignal) => Promise<void>) | undefined;
+let exportAbortController: AbortController | undefined;
+let exportDialkitCleanup: (() => void) | undefined;
+let exportRunning = false;
+let exportReturnFocus: HTMLElement | undefined;
 let textSubjectValue = restoredSettings.text ?? "Fayaaa";
 let textEditorStartValue = textSubjectValue;
 let textEditorOpen = false;
@@ -502,19 +517,14 @@ let videoPreviewFrame = 0;
 
 function updateVideoExportUi(): void {
   const [width, height] = videoDimensions(videoExportSettings);
+  const isVideo = videoExportSettings.kind === "video";
   videoFramePreview.style.aspectRatio = `${width} / ${height}`;
   videoFramePreview.dataset.ratio = videoExportSettings.ratio;
-  videoExportSummary.value = `${width} × ${height} · ${videoExportSettings.fps} FPS`;
+  videoExportSummary.value = isVideo
+    ? `${width} × ${height} · ${videoExportSettings.fps} FPS · ${videoExportSettings.duration}s`
+    : `${width} × ${height} · lossless PNG`;
   videoExportSummary.textContent = videoExportSummary.value;
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-ratio]")) {
-    button.setAttribute("aria-pressed", String(button.dataset.videoRatio === videoExportSettings.ratio));
-  }
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-fps]")) {
-    button.setAttribute("aria-pressed", String(Number(button.dataset.videoFps) === videoExportSettings.fps));
-  }
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-quality]")) {
-    button.setAttribute("aria-pressed", String(button.dataset.videoQuality === videoExportSettings.quality));
-  }
+  videoExportConfirm.textContent = isVideo ? "Download video" : "Download image";
 }
 
 function drawVideoFramePreview(): void {
@@ -537,10 +547,12 @@ function drawVideoFramePreview(): void {
   let cropHeight = canvas.height;
   if (sourceAspect > targetAspect) cropWidth = canvas.height * targetAspect;
   else cropHeight = canvas.width / targetAspect;
+  cropWidth /= videoExportSettings.scale;
+  cropHeight /= videoExportSettings.scale;
   const travelX = Math.max(0, canvas.width - cropWidth) * 0.5;
   const travelY = Math.max(0, canvas.height - cropHeight) * 0.5;
-  const sourceX = (canvas.width - cropWidth) * 0.5 - videoExportSettings.frameX * travelX;
-  const sourceY = (canvas.height - cropHeight) * 0.5 - videoExportSettings.frameY * travelY;
+  const sourceX = (canvas.width - cropWidth) * 0.5 + videoExportSettings.frameX * travelX;
+  const sourceY = (canvas.height - cropHeight) * 0.5 + videoExportSettings.frameY * travelY;
   context.clearRect(0, 0, videoFramePreview.width, videoFramePreview.height);
   context.drawImage(
     canvas,
@@ -558,46 +570,37 @@ function drawVideoFramePreview(): void {
 
 function openVideoExport(): void {
   closeToolbarMenus();
+  exportReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  // Every export starts from the composition exactly as it exists on the
+  // playground. Reframing remains available inside this modal, but stale
+  // export-only zoom/offsets must never override the user's tuned dials.
+  videoExportSettings.frameX = 0;
+  videoExportSettings.frameY = 0;
+  videoExportSettings.scale = 1;
   videoExportOpen = true;
   videoExportModal.hidden = false;
   document.body.classList.add("video-export-open");
+  mountVideoExportControls();
   updateVideoExportUi();
   cancelAnimationFrame(videoPreviewFrame);
   videoPreviewFrame = requestAnimationFrame(drawVideoFramePreview);
-  required<HTMLButtonElement>(".video-export-close").focus();
+  required<HTMLButtonElement>(".video-export-close").focus({ preventScroll: true });
 }
 
 function closeVideoExport(): void {
+  if (exportRunning) {
+    exportAbortController?.abort();
+    exportRunning = false;
+    exportProgress.hidden = true;
+    videoExportConfirm.disabled = false;
+  }
   videoExportOpen = false;
   videoExportModal.hidden = true;
   document.body.classList.remove("video-export-open");
   cancelAnimationFrame(videoPreviewFrame);
-}
-
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-ratio]")) {
-  button.addEventListener("click", () => {
-    videoExportSettings.ratio = button.dataset.videoRatio as VideoRatio;
-    videoExportSettings.frameX = 0;
-    videoExportSettings.frameY = 0;
-    updateVideoExportUi();
-    persistPlayground();
-  });
-}
-
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-fps]")) {
-  button.addEventListener("click", () => {
-    videoExportSettings.fps = Number(button.dataset.videoFps) as 24 | 30 | 60;
-    updateVideoExportUi();
-    persistPlayground();
-  });
-}
-
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-quality]")) {
-  button.addEventListener("click", () => {
-    videoExportSettings.quality = button.dataset.videoQuality as VideoQuality;
-    updateVideoExportUi();
-    persistPlayground();
-  });
+  exportDialkitCleanup?.();
+  exportDialkitCleanup = undefined;
+  exportReturnFocus?.focus();
 }
 
 required<HTMLButtonElement>(".video-export-close").addEventListener("click", closeVideoExport);
@@ -621,8 +624,8 @@ videoFramePreview.addEventListener("pointerdown", (event) => {
 videoFramePreview.addEventListener("pointermove", (event) => {
   if (event.pointerId !== videoFramePointer) return;
   const bounds = videoFramePreview.getBoundingClientRect();
-  videoExportSettings.frameX = Math.max(-1, Math.min(1, videoFramePointerStart.frameX + ((event.clientX - videoFramePointerStart.x) / bounds.width) * 2));
-  videoExportSettings.frameY = Math.max(-1, Math.min(1, videoFramePointerStart.frameY + ((event.clientY - videoFramePointerStart.y) / bounds.height) * 2));
+  videoExportSettings.frameX = clampFrame(videoFramePointerStart.frameX - ((event.clientX - videoFramePointerStart.x) / bounds.width) * 2);
+  videoExportSettings.frameY = clampFrame(videoFramePointerStart.frameY - ((event.clientY - videoFramePointerStart.y) / bounds.height) * 2);
 });
 const stopVideoFrameDrag = (event: PointerEvent) => {
   if (event.pointerId !== videoFramePointer) return;
@@ -632,14 +635,39 @@ const stopVideoFrameDrag = (event: PointerEvent) => {
 videoFramePreview.addEventListener("pointerup", stopVideoFrameDrag);
 videoFramePreview.addEventListener("pointercancel", stopVideoFrameDrag);
 
-videoExportConfirm.addEventListener("click", () => {
-  if (!videoRecorder) return;
-  closeVideoExport();
-  void videoRecorder({ ...videoExportSettings });
+videoExportConfirm.addEventListener("click", async () => {
+  const exporter = videoExportSettings.kind === "video" ? videoRecorder : imageExporter;
+  if (!exporter || exportRunning) return;
+  const controller = new AbortController();
+  exportAbortController = controller;
+  exportRunning = true;
+  exportProgress.hidden = false;
+  videoExportConfirm.disabled = true;
+  try {
+    await exporter({ ...videoExportSettings }, controller.signal);
+    if (!controller.signal.aborted) {
+      exportRunning = false;
+      closeVideoExport();
+    }
+  } finally {
+    if (exportAbortController === controller) {
+      exportRunning = false;
+      exportProgress.hidden = true;
+      videoExportConfirm.disabled = false;
+      exportAbortController = undefined;
+    }
+  }
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && videoExportOpen) closeVideoExport();
+  if (event.key === "Tab" && videoExportOpen) {
+    const focusable = [...videoExportModal.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled])")].filter((item) => !item.closest("[hidden]"));
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  }
 });
 
 function setSubjectTab(kind: SubjectKind): void {
@@ -1255,13 +1283,17 @@ let logoLoopTime = 0.08;
 let exportRecording = false;
 let captureBusy = false;
 let webmCodecs: VideoCodec[] = [];
+let encodableVideoCodecs: VideoCodec[] = [];
 let videoExportOpen = false;
 const videoExportSettings: VideoExportSettings = {
+  kind: restoredSettings.video?.kind ?? "image",
   ratio: restoredSettings.video?.ratio ?? "16:9",
   fps: restoredSettings.video?.fps ?? 30,
   quality: restoredSettings.video?.quality ?? "high",
+  duration: restoredSettings.video?.duration ?? 3,
   frameX: restoredSettings.video?.frameX ?? 0,
   frameY: restoredSettings.video?.frameY ?? 0,
+  scale: restoredSettings.video?.scale ?? 1,
 };
 
 function persistPlayground(): void {
@@ -1279,11 +1311,39 @@ function persistPlayground(): void {
   });
 }
 
+function mountVideoExportControls(): void {
+  exportDialkitCleanup?.();
+  exportDialkitCleanup = mountExportDialKit(
+    required<HTMLElement>("#export-dialkit-root"),
+    {
+      kind: videoExportSettings.kind,
+      ratio: videoExportSettings.ratio,
+      quality: videoExportSettings.quality,
+      scale: 100,
+      fps: videoExportSettings.fps,
+      duration: videoExportSettings.duration,
+    },
+    (values: ExportDialValues) => {
+      if (exportRunning) return;
+      const ratioChanged = values.ratio !== videoExportSettings.ratio;
+      videoExportSettings.kind = values.kind;
+      videoExportSettings.ratio = values.ratio;
+      videoExportSettings.quality = values.quality;
+      videoExportSettings.scale = values.scale / 100;
+      videoExportSettings.fps = values.fps;
+      videoExportSettings.duration = values.duration;
+      if (ratioChanged) {
+        videoExportSettings.frameX = 0;
+        videoExportSettings.frameY = 0;
+      }
+      updateVideoExportUi();
+      persistPlayground();
+    },
+  );
+}
+
 function videoDimensions(settings: VideoExportSettings): [number, number] {
-  const edge = VIDEO_QUALITIES[settings.quality].edge;
-  if (settings.ratio === "1:1") return [edge, edge];
-  if (settings.ratio === "9:16") return [edge, Math.round((edge * 16) / 9)];
-  return [Math.round((edge * 16) / 9), edge];
+  return exportDimensions(settings);
 }
 
 function syncMotionButton(): void {
@@ -2239,7 +2299,26 @@ void (async () => {
       });
     }
 
-    async function exportFrame(): Promise<void> {
+    function applyExportFraming(presentation: PresentationSnapshot, settings: VideoExportSettings, width: number, height: number): void {
+      presentation.params = {
+        ...presentation.params,
+        scale: Number(presentation.params.scale) * settings.scale,
+        offsetX: Number(presentation.params.offsetX) - settings.frameX * 0.18,
+        offsetY: Number(presentation.params.offsetY) - settings.frameY * 0.18,
+      };
+      presentation.sourceRect = presentation.source
+        ? getPresentationRect(presentation.sourceAspect, presentation.params, width, height)
+        : undefined;
+    }
+
+    function setExportProgress(title: string, progress: number): void {
+      const percent = Math.round(progress * 100);
+      exportProgressTitle.textContent = title;
+      exportProgressDetail.textContent = `${percent}%`;
+      exportProgressMeter.value = percent;
+    }
+
+    async function exportFrame(settings: VideoExportSettings = videoExportSettings, signal = new AbortController().signal): Promise<void> {
       if (pendingSourceSwap || pendingBlend) {
         announce("Wait for the new source to finish igniting before exporting.");
         return;
@@ -2252,34 +2331,49 @@ void (async () => {
         announce("Finish the current export first.");
         return;
       }
-      const presentation = capturePresentation(EXPORT_WIDTH, EXPORT_HEIGHT);
+      const [width, height] = videoDimensions(settings);
+      const presentation = capturePresentation(width, height);
+      applyExportFraming(presentation, settings, width, height);
       captureBusy = true;
       exportStatus.textContent = "Rendering the current composition…";
       try {
-        prepareCapture(presentation, EXPORT_WIDTH, EXPORT_HEIGHT);
+        setExportProgress("Rendering image", 0.2);
+        prepareCapture(presentation, width, height);
         const output = await renderCaptureFrame(
           presentation,
           presentation.animationTime,
           1,
-          EXPORT_WIDTH,
-          EXPORT_HEIGHT,
+          width,
+          height,
         );
-        downloadBlob(await canvasBlob(output), "fayaaa-frame.png");
-        exportStatus.textContent = "PNG exported with the current source, look, direction, and blend.";
+        if (signal.aborted) throw new DOMException("Export canceled", "AbortError");
+        setExportProgress("Encoding PNG", 0.8);
+        const png = await canvasBlob(output);
+        const verified = await createImageBitmap(png);
+        const verifiedWidth = verified.width;
+        const verifiedHeight = verified.height;
+        verified.close();
+        if (verifiedWidth !== width || verifiedHeight !== height || png.type !== "image/png") {
+          throw new Error("The encoded image did not match the requested export settings.");
+        }
+        downloadBlob(png, `fayaaa-${settings.ratio.replace(":", "x")}-${width}x${height}.png`);
+        setExportProgress("Image ready", 1);
+        exportStatus.textContent = `Verified ${verifiedWidth} × ${verifiedHeight} lossless PNG exported.`;
         announce("Fayaaa frame exported as PNG");
       } catch (error) {
-        const message = error instanceof Error ? error.message : "PNG export failed.";
+        const message = signal.aborted ? "Image export canceled." : error instanceof Error ? error.message : "PNG export failed.";
         exportStatus.textContent = message;
         announce(message);
       } finally {
         captureBusy = false;
       }
     }
+    imageExporter = exportFrame;
 
     for (const button of document.querySelectorAll<HTMLButtonElement>("[data-export-frame]")) {
       button.addEventListener("click", () => {
         setToolbarMenuOpen(downloadPicker, false);
-        void exportFrame();
+        openVideoExport();
       });
     }
     required<HTMLButtonElement>("#export").addEventListener("click", () => void exportFrame());
@@ -2296,17 +2390,19 @@ void (async () => {
       "#file, #background-file, #stage-text-input, #background-color",
     )];
 
-    async function encodeWebmClip(
+    async function encodeClip(
       presentation: PresentationSnapshot,
       codec: VideoCodec,
+      format: "mp4" | "webm",
       settings: VideoExportSettings,
       width: number,
       height: number,
+      signal: AbortSignal,
     ): Promise<Blob> {
       const quality = VIDEO_QUALITIES[settings.quality];
       const targetBuffer = new BufferTarget();
       const output = new Output({
-        format: new WebMOutputFormat(),
+        format: format === "mp4" ? new Mp4OutputFormat({ fastStart: "in-memory" }) : new WebMOutputFormat(),
         target: targetBuffer,
       });
       const videoSource = new CanvasSource(captureOutput, {
@@ -2315,30 +2411,28 @@ void (async () => {
         keyFrameInterval: 2,
       });
       output.addVideoTrack(videoSource, { frameRate: settings.fps });
-      const clipEffect = new EffectTransition(0);
-      const frameCount = settings.fps * CLIP_SECONDS;
+      const frameCount = settings.fps * settings.duration;
 
       try {
         await output.start();
         for (let index = 0; index < frameCount; index += 1) {
+          if (signal.aborted) throw new DOMException("Export canceled", "AbortError");
           const timestamp = index / settings.fps;
           const shaderTime = presentation.animationTime + (
             presentation.motionPaused ? 0 : timestamp * Number(presentation.params.speed)
           );
-          let effectProgress = 1;
-          if (!presentation.motionPaused) {
-            clipEffect.setTarget(effectLoopTarget(timestamp));
-            clipEffect.tick(index === 0 ? 0 : 1 / settings.fps);
-            effectProgress = clipEffect.value;
-          }
-          await renderCaptureFrame(presentation, shaderTime, effectProgress, width, height);
+          // Export the fully engaged hover treatment on every frame. The user
+          // cannot keep a pointer over a downloaded file, so an export-only
+          // reveal loop would silently replace the composition they approved.
+          await renderCaptureFrame(presentation, shaderTime, 1, width, height);
           await videoSource.add(timestamp, 1 / settings.fps, {
             keyFrame: index === 0 || index % (settings.fps * 2) === 0,
           });
 
           const encodeProgress = (index + 1) / frameCount;
           const percent = Math.round(encodeProgress * 100);
-          exportStatus.textContent = `Encoding a real 1280 × 720 clip… ${percent}%`;
+          exportStatus.textContent = `Encoding ${width} × ${height} ${format.toUpperCase()}… ${percent}%`;
+          setExportProgress(`Encoding ${format.toUpperCase()}`, encodeProgress);
           for (const button of recordButtons) button.textContent = `${percent}%`;
         }
         await output.finalize();
@@ -2349,11 +2443,25 @@ void (async () => {
         throw error;
       }
 
-      if (!targetBuffer.buffer) throw new Error("The WebM encoder produced no output.");
-      return new Blob([targetBuffer.buffer], { type: "video/webm" });
+      if (!targetBuffer.buffer) throw new Error(`The ${format.toUpperCase()} encoder produced no output.`);
+      return new Blob([targetBuffer.buffer], { type: format === "mp4" ? "video/mp4" : "video/webm" });
     }
 
-    async function recordClip(settings: VideoExportSettings): Promise<void> {
+    async function inspectEncodedClip(blob: Blob): Promise<{ codec: string; width: number; height: number; duration: number; color: VideoColorSpaceInit }> {
+      const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+      if (!(await input.canRead())) throw new Error("The encoded file could not be read back for verification.");
+      const track = await input.getPrimaryVideoTrack();
+      if (!track) throw new Error("The encoded file contains no video track.");
+      return {
+        codec: (await track.getCodec()) ?? "unknown",
+        width: await track.getCodedWidth(),
+        height: await track.getCodedHeight(),
+        duration: await input.computeDuration(),
+        color: await track.getColorSpace(),
+      };
+    }
+
+    async function recordClip(settings: VideoExportSettings, signal: AbortSignal): Promise<void> {
       if (pendingSourceSwap || pendingBlend) {
         announce("Wait for the new source to finish igniting before recording.");
         return;
@@ -2367,22 +2475,16 @@ void (async () => {
         announce("Finish the current export first.");
         return;
       }
-      if (webmCodecs.length === 0) {
-        const message = "Finalized WebM encoding is not available in this browser. PNG and JSON export still work.";
+      const selectedFormat = chooseVideoFormat(encodableVideoCodecs);
+      if (!selectedFormat) {
+        const message = "Video encoding is not available in this browser. Image export still works.";
         exportStatus.textContent = message;
         announce(message);
         return;
       }
       const [width, height] = videoDimensions(settings);
       const presentation = capturePresentation(width, height);
-      presentation.params = {
-        ...presentation.params,
-        offsetX: Number(presentation.params.offsetX) + settings.frameX * 0.18,
-        offsetY: Number(presentation.params.offsetY) + settings.frameY * 0.18,
-      };
-      presentation.sourceRect = presentation.source
-        ? getPresentationRect(presentation.sourceAspect, presentation.params, width, height)
-        : undefined;
+      applyExportFraming(presentation, settings, width, height);
       captureBusy = true;
       exportRecording = true;
       const previousDisabled = new Map(recordingMutators.map((control) => [control, control.disabled]));
@@ -2395,23 +2497,22 @@ void (async () => {
         exportStatus.textContent = "Preparing a real 1280 × 720 capture…";
         prepareCapture(presentation, width, height);
 
-        let video: Blob | undefined;
-        let lastError: unknown;
-        for (const codec of webmCodecs) {
-          try {
-            video = await encodeWebmClip(presentation, codec, settings, width, height);
-            break;
-          } catch (error) {
-            lastError = error;
-          }
+        if (selectedFormat.format === "webm") {
+          announce("MP4 is unavailable in this browser. Exporting a high-quality WebM instead.");
         }
-        if (!video) throw lastError ?? new Error("No compatible WebM encoder completed the clip.");
-
-        downloadBlob(video, `fayaaa-${settings.ratio.replace(":", "x")}-${settings.fps}fps.webm`);
-        exportStatus.textContent = `Finalized ${width} × ${height} WebM exported with the frozen composition.`;
-        announce("Three second Fayaaa clip exported as WebM");
+        const video = await encodeClip(presentation, selectedFormat.codec, selectedFormat.format, settings, width, height, signal);
+        if (signal.aborted) throw new DOMException("Export canceled", "AbortError");
+        setExportProgress("Verifying file", 0.98);
+        const verified = await inspectEncodedClip(video);
+        if (verified.codec !== selectedFormat.codec || verified.width !== width || verified.height !== height || Math.abs(verified.duration - settings.duration) > 1 / settings.fps) {
+          throw new Error("The encoded file did not match the requested export settings.");
+        }
+        downloadBlob(video, `fayaaa-${settings.ratio.replace(":", "x")}-${settings.fps}fps.${selectedFormat.format}`);
+        const color = verified.color.primaries ?? "sRGB";
+        exportStatus.textContent = `Verified ${verified.width} × ${verified.height} · ${settings.fps} FPS · ${verified.duration.toFixed(2)}s · ${verified.codec.toUpperCase()} ${selectedFormat.format.toUpperCase()} · ${color}.`;
+        announce(`${settings.duration} second Fayaaa clip exported as ${selectedFormat.format.toUpperCase()}`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "WebM recording failed.";
+        const message = signal.aborted ? "Video export canceled." : error instanceof Error ? error.message : "Video export failed.";
         exportStatus.textContent = message;
         announce(message);
       } finally {
@@ -2425,9 +2526,8 @@ void (async () => {
       }
     }
 
-    for (const button of recordButtons) {
+    for (const button of document.querySelectorAll<HTMLButtonElement>("[data-open-export]")) {
       button.addEventListener("click", () => {
-        setToolbarMenuOpen(downloadPicker, false);
         openVideoExport();
       });
     }
@@ -2599,7 +2699,8 @@ void (async () => {
       }
 
       let effectTarget = 1;
-      if (pendingSourceSwap) effectTarget = 0;
+      if (videoExportOpen) effectTarget = 1;
+      else if (pendingSourceSwap) effectTarget = 0;
       else if (pendingBlend) effectTarget = 0;
       else if (logoReplayPhase !== "idle") {
         effectTarget = motionPaused ? effectTransition.value : 0;
@@ -2671,17 +2772,19 @@ void (async () => {
 
     void (async () => {
       try {
-        webmCodecs = await getEncodableVideoCodecs(["vp9", "vp8"], {
+        encodableVideoCodecs = await getEncodableVideoCodecs(["avc", "vp9", "vp8"], {
           width: EXPORT_WIDTH,
           height: EXPORT_HEIGHT,
           quality: new Quality({ bitrate: VIDEO_QUALITIES.high.bitrate, bitrateMode: "variable" }),
         });
+        webmCodecs = encodableVideoCodecs.filter((codec) => codec === "vp9" || codec === "vp8");
       } catch {
+        encodableVideoCodecs = [];
         webmCodecs = [];
       }
       if (disposed) return;
       updateExportDetails();
-      if (webmCodecs.length > 0) {
+      if (encodableVideoCodecs.length > 0) {
         for (const button of recordButtons) button.disabled = false;
         return;
       }
@@ -3498,6 +3601,7 @@ if (import.meta.hot) {
     stageObserver.disconnect();
     window.removeEventListener("resize", syncWindowSize);
     dialkitCleanup();
+    exportDialkitCleanup?.();
     mobileControlsCleanup();
     cancelAnimationFrame(audioPointerFrame);
     fireAudio.dispose();

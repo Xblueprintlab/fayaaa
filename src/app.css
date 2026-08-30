@@ -105,7 +105,7 @@ a {
   gap: 8px;
   border: 0;
   border-radius: 999px;
-  padding: 5px 10px 5px 5px;
+  padding: 5px 16px 5px 5px;
   overflow: hidden;
   background: #f7f7f7;
   color: var(--muted);
@@ -797,15 +797,19 @@ a {
 .demo-shell[data-background="image"] .shader-stage { --shader-bg: transparent; }
 
 .download-trigger {
-  width: 100px;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 13px 0 12px;
+  width: 92px;
+  justify-content: center;
+  padding: 0 14px;
   background: #171717;
   color: #ffffff;
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+}
+
+.download-trigger::after {
+  display: none;
+  content: none;
 }
 
 .download-trigger span {
@@ -1346,13 +1350,14 @@ body.video-export-open { overflow: hidden; }
 .video-export-modal[hidden] { display: none; }
 
 .video-export-dialog {
-  width: min(780px, 100%);
+  width: min(1040px, 100%);
   max-height: calc(100svh - 48px);
   overflow: auto;
   border: 1px solid rgb(0 0 0 / 0.1);
-  border-radius: 24px;
-  padding: 8px;
-  background: #f7f7f7;
+  border-radius: 26px;
+  padding: 10px;
+  background: #f4f4f2;
+  box-shadow: 0 30px 90px rgb(0 0 0 / 0.28);
 }
 
 .video-export-header,
@@ -1363,7 +1368,10 @@ body.video-export-open { overflow: hidden; }
   gap: 12px;
 }
 
-.video-export-header { padding: 8px 8px 12px 12px; }
+.video-export-header {
+  min-height: 38px;
+  padding: 0 4px 8px 6px;
+}
 
 .video-export-header h2 {
   margin: 0;
@@ -1373,152 +1381,255 @@ body.video-export-open { overflow: hidden; }
 }
 
 .video-export-close {
-  width: 34px;
-  height: 34px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  place-items: center;
+  border: 1px solid transparent;
   border-radius: 999px;
+  padding: 0;
   background: rgb(0 0 0 / 0.055);
   color: rgb(0 0 0 / 0.62);
   cursor: pointer;
-  font-size: 20px;
-  line-height: 1;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.video-export-close svg {
+  width: 14px;
+  height: 14px;
+  overflow: visible;
+}
+
+.video-export-close path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+}
+
+.video-export-close:hover {
+  background: rgb(0 0 0 / 0.09);
+  color: #171717;
+}
+
+.video-export-close:focus-visible {
+  border-color: rgb(0 0 0 / 0.34);
+  outline: 2px solid #fff;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px #171717;
 }
 
 .video-export-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(240px, 0.75fr);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1.65fr) minmax(260px, 0.65fr);
+  gap: 10px;
 }
 
 .video-frame-wrap {
   position: relative;
   display: grid;
-  height: min(58svh, 520px);
-  min-height: 460px;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  height: min(68svh, 650px);
+  min-height: 520px;
   overflow: hidden;
   place-items: center;
   border-radius: 18px;
-  background: #17100c;
+  background-color: #17100c;
+  background-image: linear-gradient(45deg, rgb(255 255 255 / 0.035) 25%, transparent 25%), linear-gradient(-45deg, rgb(255 255 255 / 0.035) 25%, transparent 25%), linear-gradient(45deg, transparent 75%, rgb(255 255 255 / 0.035) 75%), linear-gradient(-45deg, transparent 75%, rgb(255 255 255 / 0.035) 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 0 9px, 9px -9px, -9px 0;
 }
 
 .video-frame-preview {
   display: block;
-  width: min(calc(100% - 24px), 440px);
+  width: min(84%, 660px);
   height: auto;
-  max-height: calc(100% - 24px);
-  border-radius: 12px;
+  max-height: 78%;
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 14px;
+  box-shadow: 0 18px 54px rgb(0 0 0 / 0.34);
   cursor: grab;
   touch-action: none;
 }
 
-.video-frame-preview[data-ratio="1:1"] { width: min(calc(100% - 24px), 420px); }
+.video-frame-preview[data-ratio="1:1"] {
+  width: auto;
+  height: min(72%, 500px);
+  max-width: 72%;
+}
+
+.video-frame-preview[data-ratio="4:5"] {
+  width: auto;
+  height: min(76%, 520px);
+  max-width: 68%;
+}
 
 .video-frame-preview[data-ratio="9:16"] {
   width: auto;
-  height: min(calc(100% - 24px), 460px);
-  max-width: calc(100% - 24px);
+  height: min(76%, 520px);
+  max-width: 58%;
 }
 
 .video-frame-preview:active { cursor: grabbing; }
 
-.video-frame-hint {
+.export-preview-chrome {
   position: absolute;
-  bottom: 12px;
-  left: 50%;
-  border-radius: 999px;
-  padding: 6px 10px;
-  background: rgb(255 255 255 / 0.9);
-  color: rgb(0 0 0 / 0.6);
+  inset: auto 0 12px;
+  display: flex;
+  justify-content: center;
+  color: rgb(255 255 255 / 0.78);
   font-size: 11px;
   font-weight: 500;
   pointer-events: none;
-  transform: translateX(-50%);
+}
+
+.export-preview-chrome span {
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgb(0 0 0 / 0.46);
+  color: #fff;
+  backdrop-filter: blur(10px);
 }
 
 .video-export-settings {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
   border-radius: 18px;
   padding: 14px;
   background: #ffffff;
 }
 
-.video-export-settings fieldset {
+.export-dialkit-mount {
   min-width: 0;
+}
+
+.export-dialkit-mount .dialkit-root {
+  --dial-surface: rgb(0 0 0 / 0.045);
+  --dial-surface-hover: rgb(0 0 0 / 0.07);
+  --dial-surface-active: rgb(0 0 0 / 0.09);
+  --dial-surface-subtle: rgb(0 0 0 / 0.065);
+  --dial-text-root: #171717;
+  --dial-text-section: rgb(0 0 0 / 0.66);
+  --dial-text-label: rgb(0 0 0 / 0.62);
+  --dial-text-focus: #111111;
+  --dial-text-primary: rgb(0 0 0 / 0.9);
+  --dial-text-secondary: rgb(0 0 0 / 0.62);
+  --dial-text-tertiary: rgb(0 0 0 / 0.42);
+  --dial-border: rgb(0 0 0 / 0.08);
+  --dial-border-hover: rgb(0 0 0 / 0.14);
+  --dial-glass-bg: transparent;
+  --dial-dropdown-bg: #f2f2f2;
+  --dial-backdrop-blur: 0px;
+  --dial-radius: 999px;
+  --dial-row-height: 32px;
+  width: 100%;
+  font-size: 12px;
+}
+
+.control-rail .dialkit-folder[data-dialkit-section="output"],
+.control-rail .dialkit-folder[data-dialkit-section="video"],
+.export-dialkit-mount .dialkit-folder[data-dialkit-section="controls"] {
+  display: none;
+}
+
+.export-dialkit-mount[data-export-kind="image"] .dialkit-folder[data-dialkit-section="video"] {
+  display: none;
+}
+
+.control-rail .dialkit-folder[data-dialkit-section="controls"] > .dialkit-folder-header,
+.control-rail .dialkit-folder[data-dialkit-section="controls"] > .dialkit-folder-content > .dialkit-folder-inner > .dialkit-panel-section-toolbar {
+  display: none;
+}
+
+.control-rail .dialkit-folder[data-dialkit-section="controls"] > .dialkit-folder-content > .dialkit-folder-inner {
+  gap: 6px;
+  padding: 0;
+}
+
+.export-dialkit-mount .dialkit-panel-inner {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.export-dialkit-mount .dialkit-panel-inline,
+.export-dialkit-mount .dialkit-panel-wrapper {
+  max-height: none;
+  overflow: visible;
+}
+
+.export-dialkit-mount .dialkit-folder-root {
+  margin: 0;
+  border: 0;
+}
+
+.export-dialkit-mount .dialkit-folder-root > .dialkit-panel-header { display: none; }
+
+.export-dialkit-mount .dialkit-panel-toolbar,
+.export-dialkit-mount .dialkit-panel-section-toolbar {
+  display: none;
+}
+
+.export-dialkit-mount .dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner {
+  gap: 6px;
+  padding: 6px 0 0;
+}
+
+.export-dialkit-mount .dialkit-panel + .dialkit-panel {
+  margin-top: 12px;
+  border-top: 1px solid var(--dial-border);
+  padding-top: 10px;
+}
+
+.export-dialkit-mount .dialkit-folder[data-dialkit-section="output"],
+.export-dialkit-mount .dialkit-folder[data-dialkit-section="video"] {
   margin: 0;
   border: 0;
   padding: 0;
 }
 
-.video-export-settings legend {
-  margin-bottom: 7px;
-  color: rgb(0 0 0 / 0.58);
-  font-size: 12px;
-  font-weight: 500;
+.export-dialkit-mount .dialkit-panel[data-multiple="true"] .dialkit-folder[data-dialkit-section="output"] {
+  border-top: 0 !important;
 }
 
-.video-option-group {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
-  border-radius: 999px;
-  padding: 3px;
-  background: rgb(0 0 0 / 0.05);
+.export-dialkit-mount .dialkit-folder[data-dialkit-section="video"] {
+  margin-top: 12px;
+  border-top: 1px solid var(--dial-border);
+  padding-top: 10px;
 }
 
-.video-option-group button {
-  min-width: 0;
-  height: 34px;
-  border-radius: 999px;
-  background: transparent;
-  color: rgb(0 0 0 / 0.58);
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
+.export-dialkit-mount .dialkit-folder[data-dialkit-section="output"] > .dialkit-folder-content > .dialkit-folder-inner,
+.export-dialkit-mount .dialkit-folder[data-dialkit-section="video"] > .dialkit-folder-content > .dialkit-folder-inner {
+  gap: 6px;
+  padding: 6px 0 0;
 }
 
-.video-option-group button[aria-pressed="true"] {
-  background: #ffffff;
-  color: #171717;
-  outline: 1px solid rgb(0 0 0 / 0.07);
+.export-dialkit-mount .dialkit-folder-title-root {
+  font-size: 13px;
 }
 
-.video-quality-group {
-  display: grid;
-  gap: 4px;
+.export-dialkit-mount .dialkit-slider-label,
+.export-dialkit-mount .dialkit-select-label,
+.export-dialkit-mount .dialkit-slider-value,
+.export-dialkit-mount .dialkit-select-value {
+  font-size: 14px;
 }
 
-.video-quality-group button {
-  display: flex;
-  min-height: 44px;
+.export-dialkit-mount .dialkit-slider-label,
+.export-dialkit-mount .dialkit-select-label {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  padding: 0 12px;
-  background: rgb(0 0 0 / 0.045);
-  color: #171717;
-  cursor: pointer;
-}
-
-.video-quality-group button[aria-pressed="true"] {
-  border-color: rgb(0 0 0 / 0.14);
-  background: #ffffff;
-}
-
-.video-quality-group strong {
-  font-size: 12px;
-  font-weight: 550;
-}
-
-.video-quality-group span {
-  color: rgb(0 0 0 / 0.46);
-  font-size: 10px;
 }
 
 .video-export-footer {
-  padding: 10px 4px 2px 12px;
+  justify-content: flex-end;
+  padding: 10px 4px 2px;
 }
 
 .video-export-footer output {
@@ -1539,6 +1650,40 @@ body.video-export-open { overflow: hidden; }
   cursor: pointer;
   font-size: 12px;
   font-weight: 550;
+}
+
+.export-progress {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  background: rgb(16 12 9 / 0.86);
+  color: #fff;
+  backdrop-filter: blur(12px);
+}
+
+.export-progress[hidden] { display: none; }
+.export-progress strong { font-size: 14px; }
+.export-progress span { color: rgb(255 255 255 / 0.66); font-size: 11px; }
+.export-progress progress { width: min(240px, 60%); height: 4px; accent-color: #ff8738; }
+.export-progress-spinner { width: 28px; height: 28px; border: 2px solid rgb(255 255 255 / 0.22); border-top-color: #fff; border-radius: 50%; animation: export-spin 700ms linear infinite; }
+@keyframes export-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .export-progress-spinner { animation: none; border-color: #fff; opacity: 0.7; }
+  .video-export-modal { backdrop-filter: none; }
+}
+
+@media (max-width: 760px) {
+  .video-export-modal { align-items: end; padding: 0; }
+  .video-export-dialog { max-height: 94svh; border-radius: 24px 24px 0 0; }
+  .video-export-layout { grid-template-columns: 1fr; }
+  .video-frame-wrap { height: 35svh; min-height: 260px; }
+  .video-export-settings { gap: 10px; }
+  .video-export-footer { margin: 0; padding: 10px 4px 2px; background: #f4f4f2; }
+  .video-export-footer output { display: none; }
 }
 
 .video-export-cancel {

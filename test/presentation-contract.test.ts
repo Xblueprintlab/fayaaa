@@ -14,6 +14,15 @@ const mainPath = fileURLToPath(
 const controlsPath = fileURLToPath(
   new URL("../src/dialkit-controls.tsx", import.meta.url),
 );
+const exportControlsPath = fileURLToPath(
+  new URL("../src/export-dialkit-controls.tsx", import.meta.url),
+);
+const pagePath = fileURLToPath(
+  new URL("../src/playground-page.ts", import.meta.url),
+);
+const appCssPath = fileURLToPath(
+  new URL("../src/app.css", import.meta.url),
+);
 const persistencePath = fileURLToPath(
   new URL("../src/playground-persistence.ts", import.meta.url),
 );
@@ -251,4 +260,36 @@ it("applies the shader blend mode consistently to the live canvas and exports", 
   expect(main).toMatch(
     /presentation\.backgroundMode !== "color" \|\|\s*\(presentation\.imageTreatment !== "edge" &&\s*presentation\.shaderBlend !== "source-over"\)/,
   );
+});
+
+it("exports the tuned composition with the hover treatment fully engaged", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("const params = { ...state };");
+  expect(main).toContain("if (videoExportOpen) effectTarget = 1;");
+  expect(main).toContain("renderCaptureFrame(presentation, shaderTime, 1, width, height)");
+  expect(main).toContain("videoExportSettings.scale = 1;");
+  expect(main).not.toContain("const clipEffect = new EffectTransition(0)");
+});
+
+it("uses DialKit for export controls without leaking export panels into the playground rail", () => {
+  const exportControls = readFileSync(exportControlsPath, "utf8");
+  const main = readFileSync(mainPath, "utf8");
+  const page = readFileSync(pagePath, "utf8");
+  const css = readFileSync(appCssPath, "utf8");
+  expect(exportControls).toContain('useDialKitController("Output"');
+  expect(exportControls).toContain('useDialKitController("Video"');
+  expect(exportControls).toContain('<DialRoot mode="inline" theme="light"');
+  expect(main).toContain("function mountVideoExportControls(): void");
+  expect(main).toMatch(/videoExportModal\.hidden = false;[\s\S]*mountVideoExportControls\(\);/);
+  expect(main).toMatch(/videoExportModal\.hidden = true;[\s\S]*exportDialkitCleanup\?\.\(\);/);
+  expect(main).not.toContain("const exportDialkitCleanup = mountExportDialKit");
+  expect(page).toContain('id="export-dialkit-root"');
+  expect(page).not.toContain('id="export-scale"');
+  expect(page).not.toContain('export-format-note');
+  expect(page).toContain('m4.25 4.25 7.5 7.5M11.75 4.25l-7.5 7.5');
+  expect(css).toContain('.control-rail .dialkit-folder[data-dialkit-section="output"]');
+  expect(css).toContain('.export-dialkit-mount .dialkit-folder[data-dialkit-section="controls"]');
+  expect(css).toContain('.export-dialkit-mount .dialkit-panel-section-toolbar');
+  expect(css).toMatch(/data-dialkit-section="output"\] \{\s*border-top: 0 !important;/);
+  expect(css).toMatch(/\.download-trigger::after \{\s*display: none;\s*content: none;/);
 });

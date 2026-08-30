@@ -1,9 +1,12 @@
 export type PersistedVideoSettings = {
-  ratio: "16:9" | "1:1" | "9:16";
+  kind?: "image" | "video";
+  ratio: "16:9" | "1:1" | "4:5" | "9:16";
   fps: 24 | 30 | 60;
   quality: "standard" | "high" | "max";
+  duration?: 3 | 5 | 10;
   frameX: number;
   frameY: number;
+  scale?: number;
 };
 
 export type PersistedPlaygroundSettings = {
