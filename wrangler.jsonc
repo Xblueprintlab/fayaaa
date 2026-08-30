@@ -8,8 +8,17 @@
     "directory": "./dist",
     "binding": "ASSETS",
     "html_handling": "auto-trailing-slash",
-    "run_worker_first": ["/fayaaa"]
+    "run_worker_first": [
+      "/fayaaa",
+      "/fayaaa/media/fayaaa-demo.mp4"
+    ]
   },
+  "r2_buckets": [
+    {
+      "binding": "FAYAAA_MEDIA",
+      "bucket_name": "fayaaa-public-media"
+    }
+  ],
   "routes": [
     {
       "pattern": "blueprintlab.work/fayaaa*",

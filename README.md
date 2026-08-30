@@ -17,6 +17,13 @@
 </p>
 
 <p align="center">
+  <a href="https://blueprintlab.work/fayaaa/media/fayaaa-demo.mp4">
+    <img src="media/fayaaa-demo-poster.jpg" width="900" alt="Watch the 75-second Fayaaa demo" />
+  </a><br />
+  <a href="https://blueprintlab.work/fayaaa/media/fayaaa-demo.mp4"><strong>▶ Watch the 75-second demo</strong></a>
+</p>
+
+<p align="center">
   <img src="public/sample-fire.png" width="480" alt="A star silhouette rendered with the Fayaaa fire shader" />
 </p>
 
