@@ -1,0 +1,54 @@
+{
+  "name": "fayaaa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A shape-aware WebGPU playground for turning images, text, and marks into living fire.",
+  "keywords": [
+    "webgpu",
+    "wgsl",
+    "shader",
+    "creative-coding",
+    "generative-art",
+    "image-effects"
+  ],
+  "author": "Nabil Bakour",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Xblueprintlab/fayaaa.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Xblueprintlab/fayaaa/issues"
+  },
+  "type": "module",
+  "packageManager": "pnpm@8.15.6",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run --exclude 'test/*.gpu.test.ts'",
+    "test:gpu": "vitest run test/render.gpu.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "bash scripts/check-wgsl.sh",
+    "check:gpu": "bash scripts/check-wgsl.sh --gpu",
+    "doctor": "vgpu doctor --pretty"
+  },
+  "dependencies": {
+    "@vgpu/wgsl-std": "^0.3.1",
+    "dialkit": "^1.4.3",
+    "mediabunny": "^1.55.3",
+    "motion": "^13.1.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "vgpu": "^0.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vgpu/wgsl": "^0.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}
