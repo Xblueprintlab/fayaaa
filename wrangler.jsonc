@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fayaaa",
+  "compatibility_date": "2026-08-30",
+  "workers_dev": false,
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "drop-trailing-slash"
+  },
+  "routes": [
+    {
+      "pattern": "blueprintlab.work/fayaaa",
+      "zone_name": "blueprintlab.work"
+    },
+    {
+      "pattern": "blueprintlab.work/fayaaa/*",
+      "zone_name": "blueprintlab.work"
+    }
+  ]
+}

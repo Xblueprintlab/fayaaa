@@ -42,6 +42,7 @@ import {
   savePlaygroundAsset,
   savePlaygroundSettings,
 } from "./playground-persistence";
+import { assetUrl } from "./base-path";
 import "./app.css";
 import { EmberPipeline } from "./pipeline";
 
@@ -192,7 +193,7 @@ const SHOWCASE_SCENES: Record<Exclude<ShowcasePresetId, "current">, ShowcaseScen
     subjectColor: String(DEFAULTS.baseColor),
     subject: {
       kind: "image",
-      url: "/artifact-mark.svg",
+      url: assetUrl("artifact-mark.svg"),
       name: "Artifact",
       supportsBurnAround: false,
     },
@@ -204,7 +205,7 @@ const SHOWCASE_SCENES: Record<Exclude<ShowcasePresetId, "current">, ShowcaseScen
     subjectColor: String(DEFAULTS.baseColor),
     subject: {
       kind: "image",
-      url: "/art-painting.jpg",
+      url: assetUrl("art-painting.jpg"),
       name: "Oil painting",
       supportsBurnAround: true,
     },
@@ -223,7 +224,7 @@ const SHOWCASE_SCENES: Record<Exclude<ShowcasePresetId, "current">, ShowcaseScen
     subjectColor: String(DEFAULTS.baseColor),
     subject: {
       kind: "image",
-      url: "/fayaaa-mark.png",
+      url: assetUrl("fayaaa-mark.png"),
       name: "Fayaaa flame",
       supportsBurnAround: true,
     },
@@ -279,7 +280,7 @@ async function loadInitialSourceAsset(): Promise<RouteSourceAsset> {
 }
 
 const routeSourceAsset = await loadInitialSourceAsset();
-const initialPreviewMode = mountPlayground("/sample-fire.png");
+const initialPreviewMode = mountPlayground(assetUrl("sample-fire.png"));
 const canvas = required<HTMLCanvasElement>("#playground");
 const shaderStage = required<HTMLElement>("#shader-stage");
 const videoExportModal = required<HTMLElement>("#video-export-modal");
@@ -847,7 +848,7 @@ required<HTMLButtonElement>("[data-upload-background]").addEventListener("click"
   backgroundFileInput.click();
 });
 
-const fireAudio = new FireAudio("/fire-burning.mp3");
+const fireAudio = new FireAudio(assetUrl("fire-burning.mp3"));
 let soundOn = false;
 let soundBusy = false;
 
@@ -3220,7 +3221,7 @@ void (async () => {
         syncActiveTreatment();
         document.body.classList.add("intro-playing"); // idempotent; replays need it
         markIntroSeen();
-        const markPromise = sourceFromUrl("/artifact-mark.svg", "Artifact").catch(() => undefined);
+        const markPromise = sourceFromUrl(assetUrl("artifact-mark.svg"), "Artifact").catch(() => undefined);
 
         userPaused = false;
         syncMotionButton();

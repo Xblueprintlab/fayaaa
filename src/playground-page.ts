@@ -1,19 +1,20 @@
 import appleLogoUrl from "./assets/apple-logo.svg";
+import { appPath, assetUrl } from "./base-path";
 
-export function mountPlayground(routePreviewUrl = "/sample-fire.png"): "image" {
+export function mountPlayground(routePreviewUrl = assetUrl("sample-fire.png")): "image" {
   document.body.innerHTML = `
     <div class="playground-layout">
       <aside class="control-rail" aria-label="Fayaaa controls">
         <header class="rail-header">
-          <a class="brand-mark" href="/" aria-label="Reload Fayaaa">
-            <img src="/fayaaa-mark.png" alt="" width="38" height="42" />
+          <a class="brand-mark" href="${appPath}" aria-label="Reload Fayaaa">
+            <img src="${assetUrl("fayaaa-mark.png")}" alt="" width="38" height="42" />
           </a>
         </header>
         <div class="dialkit-mount" id="dialkit-root"></div>
         <footer class="rail-footer">
           <div class="footer-maker">
             <span class="footer-avatar" aria-hidden="true">
-              <img src="/nabil-bakour-avatar.png" alt="" />
+              <img src="${assetUrl("nabil-bakour-avatar.png")}" alt="" />
             </span>
             <span>Crafted by <a class="footer-name" href="https://nabilbakour.com/" target="_blank" rel="noreferrer"><strong>Nabil Bakour</strong></a></span>
           </div>
@@ -59,14 +60,14 @@ export function mountPlayground(routePreviewUrl = "/sample-fire.png"): "image" {
                     <button class="subject-sample is-active" type="button" data-sample-source="${appleLogoUrl}" data-sample-name="Apple" aria-label="Use Apple sample" aria-pressed="true">
                       <img src="${appleLogoUrl}" alt="" />
                     </button>
-                    <button class="subject-sample" type="button" data-sample-source="/fayaaa-mark.png" data-sample-name="Flame" aria-label="Use Flame sample" aria-pressed="false">
-                      <img src="/fayaaa-mark.png" alt="" />
+                    <button class="subject-sample" type="button" data-sample-source="${assetUrl("fayaaa-mark.png")}" data-sample-name="Flame" aria-label="Use Flame sample" aria-pressed="false">
+                      <img src="${assetUrl("fayaaa-mark.png")}" alt="" />
                     </button>
-                    <button class="subject-sample" type="button" data-sample-source="/sample-leaf-photo.png" data-sample-name="Leaf photo" data-burn-around="true" aria-label="Use leaf photo sample" aria-pressed="false">
-                      <img src="/sample-leaf-photo.png" alt="" />
+                    <button class="subject-sample" type="button" data-sample-source="${assetUrl("sample-leaf-photo.png")}" data-sample-name="Leaf photo" data-burn-around="true" aria-label="Use leaf photo sample" aria-pressed="false">
+                      <img src="${assetUrl("sample-leaf-photo.png")}" alt="" />
                     </button>
-                    <button class="subject-sample" type="button" data-sample-source="/artifact-mark.svg" data-sample-name="Artifact" aria-label="Use Artifact sample" aria-pressed="false">
-                      <img src="/artifact-mark.svg" alt="" />
+                    <button class="subject-sample" type="button" data-sample-source="${assetUrl("artifact-mark.svg")}" data-sample-name="Artifact" aria-label="Use Artifact sample" aria-pressed="false">
+                      <img src="${assetUrl("artifact-mark.svg")}" alt="" />
                     </button>
                   </div>
                   <button class="subject-upload-dropzone" type="button" data-upload>

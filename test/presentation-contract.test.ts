@@ -111,7 +111,7 @@ it("burns the artwork as a subject instead of hanging it behind the fire", () =>
   const sceneEnd = main.indexOf('"violet-type": {');
   expect(sceneStart).toBeGreaterThan(-1);
   const scene = main.slice(sceneStart, sceneEnd);
-  expect(scene).toContain('url: "/art-painting.jpg"');
+  expect(scene).toContain('url: assetUrl("art-painting.jpg")');
   expect(scene).toContain("supportsBurnAround: true");
   expect(scene).toContain('background: { mode: "color"');
   expect(scene).not.toContain('mode: "image"');
@@ -214,7 +214,7 @@ it("offers both image compositing treatments with a real raster sample", () => {
   expect(composite).toContain("fn blendFireIntoSource");
   expect(composite).toContain("g.edgeTreatment >= 0.5");
   expect(readFileSync(fileURLToPath(new URL("../src/playground-page.ts", import.meta.url)), "utf8"))
-    .toContain('data-sample-source="/sample-leaf-photo.png" data-sample-name="Leaf photo" data-burn-around="true"');
+    .toContain('data-sample-source="${assetUrl("sample-leaf-photo.png")}" data-sample-name="Leaf photo" data-burn-around="true"');
 });
 
 it("does not duplicate the DOM subject under the solid WebGPU composite", () => {
