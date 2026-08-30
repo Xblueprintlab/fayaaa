@@ -2728,8 +2728,8 @@ void (async () => {
     };
     const INTRO_WORD = {
       text: "fayaaa",
-      zoomFrom: 0.4,   // push-in start scale
-      zoomTo:   0.5,   // push-in end scale — constant linear drift
+      zoomFrom: 0.25,  // restrained opening size on portrait and desktop
+      zoomTo:   0.32,  // constant push-in, still intimate at the hold
       spacing:  1.7,   // signature spacing, opened up for the fire's glow
       penMin:   0.7,   // hairline on upstrokes (brush pressure), grid units
       penMax:   2.5,   // full weight on downstrokes
@@ -2745,7 +2745,7 @@ void (async () => {
     // the whole word phase, locked off for the burn-out, and a small
     // 60fps landing settle for the mark.
     const INTRO_CAMERA = {
-      markScale: 0.26, // the mark stays small and intimate during the reveal
+      markScale: 0.15, // the mark stays small and intimate during the reveal
       settle:    1.04, // tiny oversize it settles from while the fire wraps
       growMs:    1150, // then it grows into the dial size as the layout enters
     };
@@ -2764,9 +2764,14 @@ void (async () => {
     // the first pixel (solid ink, never a hollow rim), then blazes up.
     const INTRO_INK = {
       body: "#7e2508",            // ember ink body while writing
-      glow: [0.35, 0.85],         // glowIntensity: coal → blaze
-      inner: [0.85, 1.1],         // luminous fill without the white core
-      exposure: [0.1, 0.16],      // capped so the peak stays deep molten
+      spread: 0.008,               // tighter bloom for the smaller lettering
+      glow: [0.3, 0.72],          // glowIntensity: coal → controlled blaze
+      inner: [0.72, 0.95],        // luminous fill without swelling the stroke
+      exposure: [0.08, 0.13],     // capped so the smaller mark stays crisp
+      sheen: 0.68,                 // retain texture without a broad highlight
+      grain: 0.65,                 // scale texture energy with the smaller art
+      waver: 0.45,                 // fewer flame tongues around thin strokes
+      flicker: 0.55,               // calmer edge motion at the reduced scale
     } as const;                   // orange — never the pale hot-metal look
 
     // Single-stroke cursive glyphs from the public-domain Hershey "Script
@@ -3061,10 +3066,21 @@ void (async () => {
       const dialInnerGlow = Number(state.innerGlow);
       const dialSheen = Number(state.sheenStrength);
       const dialBaseColor = String(state.baseColor);
+      const dialBackgroundColor = String(state.bgColor);
       const dialExposure = Number(state.exposure);
       const dialTopLight = Number(state.topLight);
+      const dialGrain = Number(state.grainAmount);
+      const dialWaver = Number(state.waverAmount);
+      const dialFlicker = Number(state.flickerAmount);
       const easeInOutCubic = (t: number): number =>
         t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+      // Keep the intro intimate on wide desktop windows. The playground's
+      // final dial scale is unchanged; only the temporary intro camera pulls
+      // back as the viewport moves from landscape to full-width/ultrawide.
+      const viewportAspect = window.innerWidth / Math.max(1, window.innerHeight);
+      const wideProgress = Math.min(1, Math.max(0, (viewportAspect - 1.35) / 0.5));
+      const introScale = 1 - 0.18 * wideProgress * wideProgress * (3 - 2 * wideProgress);
+      const introMarkScale = INTRO_CAMERA.markScale * introScale;
       let skipped = false;
       const skip = () => {
         skipped = true;
@@ -3076,7 +3092,7 @@ void (async () => {
         window.addEventListener("keydown", skip, true);
       }, 400);
 
-      const restoreDialMaterial = () => {
+      const restoreDialMaterial = (restoreBackground = true) => {
         state.scale = dialScale;
         state.offsetX = dialOffsetX;
         state.offsetY = dialOffsetY;
@@ -3086,9 +3102,14 @@ void (async () => {
         state.innerGlow = dialInnerGlow;
         state.sheenStrength = dialSheen;
         state.baseColor = dialBaseColor;
+        if (restoreBackground) state.bgColor = dialBackgroundColor;
         state.exposure = dialExposure;
         state.topLight = dialTopLight;
+        state.grainAmount = dialGrain;
+        state.waverAmount = dialWaver;
+        state.flickerAmount = dialFlicker;
         currentPipeline.applyEmberParams(state);
+        if (restoreBackground) syncStageBackground();
       };
 
       try {
@@ -3107,11 +3128,20 @@ void (async () => {
         // evenly, and a lit body so the drawn line is SOLID ink from the
         // first pixel — never a hollow rim around empty dark.
         state.heatAngle = "full";
-        state.glowSpread = 0.001 + 23 * 0.0005; // the dials' Full pairing
+        // The intro is a temporary presentation with a true-black canvas,
+        // independent of the playground's selected background. Restore the
+        // selected color with the rest of the dial material on every exit.
+        state.bgColor = "#000000";
+        syncStageBackground();
+        state.glowSpread = INTRO_INK.spread;
         state.baseColor = INTRO_INK.body;
         state.glowIntensity = INTRO_INK.glow[0];
         state.innerGlow = INTRO_INK.inner[0];
         state.exposure = INTRO_INK.exposure[0];
+        state.sheenStrength = dialSheen * INTRO_INK.sheen;
+        state.grainAmount = dialGrain * INTRO_INK.grain;
+        state.waverAmount = dialWaver * INTRO_INK.waver;
+        state.flickerAmount = dialFlicker * INTRO_INK.flicker;
         state.offsetX = 0; // the intro frames its own subjects dead center
         state.offsetY = 0;
         currentPipeline.applyEmberParams(state);
@@ -3145,8 +3175,8 @@ void (async () => {
             // No pan, no reversal — the camera never draws attention.
             const pushT = Math.min(1, elapsed / wordSpan);
             const pushEased = 0.5 - 0.5 * Math.cos(Math.PI * pushT);
-            state.scale = INTRO_WORD.zoomFrom +
-              (INTRO_WORD.zoomTo - INTRO_WORD.zoomFrom) * pushEased;
+            state.scale = (INTRO_WORD.zoomFrom +
+              (INTRO_WORD.zoomTo - INTRO_WORD.zoomFrom) * pushEased) * introScale;
 
             // The heat-up: coals → full burn, blooming just after the pen
             // finishes its pass.
@@ -3222,7 +3252,12 @@ void (async () => {
           if (!skipped) await introSleep(INTRO_TIMING.blackGap);
         }
 
-        restoreDialMaterial();
+        // Do not restore the playground material between subjects. Even with
+        // the blank mask installed above, that intermediate full-energy GPU
+        // state can reach a compositor frame before the mark is zeroed,
+        // reading as a flash between the word and icon on some browsers.
+        // The captured dial values below are the icon's targets, so we can
+        // transition straight from the dead word into a zero-energy mark.
         const revealMark = await markPromise;
         if (disposed) return;
 
@@ -3246,21 +3281,37 @@ void (async () => {
         // wraps around its silhouette via a heat-direction sweep while the
         // material blooms up to the dials and the camera settles the
         // landing. Ends exactly on the user's dial state.
-        const targetGlow = Number(state.glowIntensity);
-        const targetInner = Number(state.innerGlow);
-        const targetExposure = Number(state.exposure);
-        const targetSheen = Number(state.sheenStrength);
+        const targetGlow = Number(dialGlowIntensity);
+        const targetInner = dialInnerGlow;
+        const targetExposure = dialExposure;
+        const targetSheen = Number(dialSheen);
+        const targetSpread = Number(dialGlowSpread);
+        const targetGrain = dialGrain;
+        const targetWaver = dialWaver;
+        const targetFlicker = dialFlicker;
+        const introMarkGlow = targetGlow * 0.5;
+        const introMarkInner = targetInner * 0.62;
+        const introMarkExposure = targetExposure * 0.72;
+        const introMarkSheen = targetSheen * 0.58;
+        const introMarkSpread = targetSpread * Math.max(0.5, introMarkScale / 0.26);
+        const introMarkGrain = targetGrain * INTRO_INK.grain;
+        const introMarkWaver = targetWaver * INTRO_INK.waver;
+        const introMarkFlicker = targetFlicker * INTRO_INK.flicker;
         const dialAngle = readHeatDirection(dialHeat);
         const landAngle = dialAngle === "full" ? Number(DEFAULTS.heatAngle) : dialAngle;
         state.glowIntensity = 0;
         state.innerGlow = 0;
         state.exposure = 0;
         state.sheenStrength = 0;
+        state.glowSpread = introMarkSpread;
+        state.grainAmount = introMarkGrain;
+        state.waverAmount = introMarkWaver;
+        state.flickerAmount = introMarkFlicker;
         // The body itself starts INVISIBLE: exactly the background color
         // with neutral topLight — no black silhouette before the flames.
         state.baseColor = String(state.bgColor);
         state.topLight = 1;
-        state.scale = INTRO_CAMERA.markScale * INTRO_CAMERA.settle;
+        state.scale = introMarkScale * INTRO_CAMERA.settle;
         effectIntent = "result";
         effectTransition.snap(1);
         currentPipeline.setEffectProgress(1);
@@ -3282,18 +3333,18 @@ void (async () => {
               ((((landAngle - wrapDegrees * (1 - easeInOutCubic(t)) - orbitTailDegrees * (1 - t)) % 360) + 360) % 360);
             const bloom = easeInOutCubic(t);
             const breath = 1 + INTRO_MARK.breath * Math.sin(Math.PI * t);
-            state.glowIntensity = targetGlow * bloom * breath;
+            state.glowIntensity = introMarkGlow * bloom * breath;
             // The icon's body glows from within during the sweep — a strong
             // inner surge that settles exactly onto the dial value at t=1.
-            state.innerGlow = targetInner * bloom * (1 + INTRO_MARK.innerSurge * Math.sin(Math.PI * t));
-            state.exposure = targetExposure * bloom;
-            state.sheenStrength = targetSheen * bloom;
+            state.innerGlow = introMarkInner * bloom * (1 + INTRO_MARK.innerSurge * Math.sin(Math.PI * t));
+            state.exposure = introMarkExposure * bloom;
+            state.sheenStrength = introMarkSheen * bloom;
             state.baseColor = mixHex(String(state.bgColor), dialBaseColor, bloom);
             state.topLight = 1 + (dialTopLight - 1) * bloom;
             // Small and intimate: the mark holds its reveal size, easing off
             // a hair of oversize while the fire wraps it.
             const settleEased = 1 - (1 - t) ** 3;
-            state.scale = INTRO_CAMERA.markScale *
+            state.scale = introMarkScale *
               (INTRO_CAMERA.settle + (1 - INTRO_CAMERA.settle) * settleEased);
             currentPipeline.applyEmberParams(state);
             currentPipeline.rebuild(state);
@@ -3310,10 +3361,10 @@ void (async () => {
           // mark is still SMALL here.
           state.heatAngle = dialHeat;
           heatCurrent = landAngle;
-          state.glowIntensity = targetGlow;
-          state.innerGlow = targetInner;
-          state.exposure = targetExposure;
-          state.sheenStrength = targetSheen;
+          state.glowIntensity = introMarkGlow;
+          state.innerGlow = introMarkInner;
+          state.exposure = introMarkExposure;
+          state.sheenStrength = introMarkSheen;
           state.baseColor = dialBaseColor;
           state.topLight = dialTopLight;
           effectIntent = "auto";
@@ -3331,7 +3382,7 @@ void (async () => {
           document.body.classList.remove("intro-playing");
           if (!skipped) {
             await new Promise<void>((resolve) => {
-              const grownFrom = INTRO_CAMERA.markScale;
+              const grownFrom = introMarkScale;
               const startedAt = performance.now();
               const grow = (now: number) => {
                 if (disposed || skipped) {
@@ -3339,9 +3390,18 @@ void (async () => {
                   return;
                 }
                 const t = Math.min(1, (now - startedAt) / INTRO_CAMERA.growMs);
-                const eased = 1 - (1 - t) ** 3;
-                state.scale = grownFrom + (dialScale - grownFrom) * eased;
-                currentPipeline.rebuild(state);
+              const eased = 1 - (1 - t) ** 3;
+              state.scale = grownFrom + (dialScale - grownFrom) * eased;
+              state.glowSpread = introMarkSpread + (targetSpread - introMarkSpread) * eased;
+              state.grainAmount = introMarkGrain + (targetGrain - introMarkGrain) * eased;
+              state.glowIntensity = introMarkGlow + (targetGlow - introMarkGlow) * eased;
+              state.innerGlow = introMarkInner + (targetInner - introMarkInner) * eased;
+              state.exposure = introMarkExposure + (targetExposure - introMarkExposure) * eased;
+              state.sheenStrength = introMarkSheen + (targetSheen - introMarkSheen) * eased;
+              state.waverAmount = introMarkWaver + (targetWaver - introMarkWaver) * eased;
+              state.flickerAmount = introMarkFlicker + (targetFlicker - introMarkFlicker) * eased;
+              currentPipeline.applyEmberParams(state);
+              currentPipeline.rebuild(state);
                 updateSourceBounds();
                 needsFrame = true;
                 if (t >= 1) resolve();
@@ -3352,6 +3412,15 @@ void (async () => {
           }
           if (!disposed) {
             state.scale = dialScale;
+            state.glowSpread = targetSpread;
+            state.grainAmount = targetGrain;
+            state.glowIntensity = targetGlow;
+            state.innerGlow = targetInner;
+            state.exposure = targetExposure;
+            state.sheenStrength = targetSheen;
+            state.waverAmount = targetWaver;
+            state.flickerAmount = targetFlicker;
+            currentPipeline.applyEmberParams(state);
             currentPipeline.rebuild(state);
             updateSourceBounds();
             needsFrame = true;

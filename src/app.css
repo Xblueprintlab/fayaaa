@@ -935,7 +935,7 @@ body.intro-playing .shader-stage { pointer-events: none; }
 
 body.intro-playing {
   overflow: hidden;
-  background: #180e01;
+  background: #000000;
 }
 
 body.intro-playing .playground-layout {
@@ -1574,9 +1574,19 @@ body.video-export-open { overflow: hidden; }
 @media (max-width: 900px) {
   body { overflow: auto; }
 
+  body.intro-playing { overflow: hidden; }
+
   .playground-layout {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  /* Mobile orders the stage before the rail, so the desktop takeover's
+     collapsed first column would otherwise make the live canvas 0px wide. */
+  body.intro-playing .playground-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.intro-playing .control-rail { display: none; }
 
   .stage-area {
     order: 1;

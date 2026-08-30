@@ -17,6 +17,7 @@ const controlsPath = fileURLToPath(
 const persistencePath = fileURLToPath(
   new URL("../src/playground-persistence.ts", import.meta.url),
 );
+const cssPath = fileURLToPath(new URL("../src/app.css", import.meta.url));
 
 it("returns canonical Fire exactly on a solid background and preserves alpha for compositions", () => {
   const source = readFileSync(compositePath, "utf8");
@@ -117,6 +118,70 @@ it("keeps the Normal fire body opaque over image and transparent backgrounds", (
   const composite = readFileSync(compositePath, "utf8");
   expect(composite).toContain(
     "select(clamp(p.innerGlow * 0.5, 0.0, 1.0), 1.0, g.blendMode < 0.5)",
+  );
+});
+
+it("uses true black only for the intro and restores the playground background", () => {
+  const main = readFileSync(mainPath, "utf8");
+  const css = readFileSync(cssPath, "utf8");
+  expect(main).toContain("const dialBackgroundColor = String(state.bgColor);");
+  expect(main).toContain('state.bgColor = "#000000";');
+  expect(main).toMatch(/state\.bgColor = "#000000";\s*syncStageBackground\(\);/);
+  expect(main).toMatch(
+    /const restoreDialMaterial = \(restoreBackground = true\) => \{[\s\S]*?if \(restoreBackground\) state\.bgColor = dialBackgroundColor;[\s\S]*?currentPipeline\.applyEmberParams\(state\);\s*if \(restoreBackground\) syncStageBackground\(\);/,
+  );
+  expect(css).toMatch(/body\.intro-playing \{[\s\S]*?background: #000000;/);
+});
+
+it("pulls the intro camera back on wide viewports without changing the playground scale", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("zoomFrom: 0.25");
+  expect(main).toContain("zoomTo:   0.32");
+  expect(main).toContain("markScale: 0.15");
+  expect(main).toContain("const viewportAspect = window.innerWidth / Math.max(1, window.innerHeight);");
+  expect(main).toContain("const introScale = 1 - 0.18 * wideProgress * wideProgress * (3 - 2 * wideProgress);");
+  expect(main).toContain("const introMarkScale = INTRO_CAMERA.markScale * introScale;");
+  expect(main).toMatch(/state\.scale = \(INTRO_WORD\.zoomFrom \+[\s\S]*?\* introScale;/);
+  expect(main).toContain("const grownFrom = introMarkScale;");
+  expect(main).toContain("state.scale = grownFrom + (dialScale - grownFrom) * eased;");
+});
+
+it("tightens the intro material for smaller art and eases back to the dial material", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("spread: 0.008");
+  expect(main).toContain("const introMarkSpread = targetSpread * Math.max(0.5, introMarkScale / 0.26);");
+  expect(main).toContain("const introMarkGrain = targetGrain * INTRO_INK.grain;");
+  expect(main).toContain("const introMarkGlow = targetGlow * 0.5;");
+  expect(main).toContain("const introMarkWaver = targetWaver * INTRO_INK.waver;");
+  expect(main).toContain("state.glowSpread = introMarkSpread + (targetSpread - introMarkSpread) * eased;");
+  expect(main).toContain("state.grainAmount = introMarkGrain + (targetGrain - introMarkGrain) * eased;");
+  expect(main).toContain("state.glowIntensity = introMarkGlow + (targetGlow - introMarkGlow) * eased;");
+  expect(main).toContain("state.waverAmount = introMarkWaver + (targetWaver - introMarkWaver) * eased;");
+});
+
+it("keeps the word-to-icon handoff black without restoring an intermediate GPU state", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("const restoreDialMaterial = (restoreBackground = true) => {");
+  expect(main).toContain("if (restoreBackground) state.bgColor = dialBackgroundColor;");
+  expect(main).toMatch(
+    /if \(!skipped\) await introSleep\(INTRO_TIMING\.blackGap\);[\s\S]*?const revealMark = await markPromise;/,
+  );
+  expect(main).not.toContain("restoreDialMaterial(false)");
+  expect(main).toMatch(
+    /const targetGlow = Number\(dialGlowIntensity\);[\s\S]*?const targetFlicker = dialFlicker;/,
+  );
+  expect(main).toMatch(
+    /finally \{[\s\S]*?restoreDialMaterial\(\);[\s\S]*?document\.body\.classList\.remove\("intro-playing"\);/,
+  );
+});
+
+it("keeps the intro stage full-width on mobile", () => {
+  const css = readFileSync(cssPath, "utf8");
+  expect(css).toMatch(
+    /@media \(max-width: 900px\) \{[\s\S]*?body\.intro-playing \.playground-layout \{\s*grid-template-columns: minmax\(0, 1fr\);/,
+  );
+  expect(css).toMatch(
+    /@media \(max-width: 900px\) \{[\s\S]*?body\.intro-playing \.control-rail \{ display: none; \}/,
   );
 });
 
