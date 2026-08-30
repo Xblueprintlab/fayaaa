@@ -6,6 +6,9 @@ import "dialkit/styles.css";
 import { CONTROL_ICONS, mountControlIcons } from "./control-icons";
 
 export type PlaygroundDialValues = {
+  presets: {
+    preset: ShowcasePresetId;
+  };
   subject: {
     size: number;
     leftRight: number;
@@ -28,29 +31,138 @@ export type PlaygroundDialValues = {
   };
 };
 
+export type ShowcasePresetId =
+  | "current"
+  | "brand-mark"
+  | "burning-painting"
+  | "violet-type"
+  | "paper-flame";
+
+type ShowcasePresetValues = Pick<PlaygroundDialValues, "subject" | "fire" | "motion">;
+
+const CURRENT_SETUP_STORAGE_KEY = "fayaaa.playground.current-controls.v1";
+
+const copyShowcaseValues = (values: ShowcasePresetValues): ShowcasePresetValues => ({
+  subject: { ...values.subject },
+  fire: { ...values.fire },
+  motion: { ...values.motion },
+});
+
+function readCurrentSetupValues(): ShowcasePresetValues | null {
+  try {
+    const stored = localStorage.getItem(CURRENT_SETUP_STORAGE_KEY);
+    if (!stored) return null;
+    const parsed = JSON.parse(stored) as Partial<ShowcasePresetValues>;
+    if (!parsed.subject || !parsed.fire || !parsed.motion) return null;
+    return copyShowcaseValues(parsed as ShowcasePresetValues);
+  } catch {
+    return null;
+  }
+}
+
+function saveCurrentSetupValues(values: ShowcasePresetValues): void {
+  try {
+    localStorage.setItem(CURRENT_SETUP_STORAGE_KEY, JSON.stringify(values));
+  } catch {
+    // DialKit still retains the active values when storage is unavailable.
+  }
+}
+
 type DialKitCallbacks = {
   onValues(values: PlaygroundDialValues): void;
   onAction(action: string): void;
+  onPreset(preset: ShowcasePresetId): void;
   onPalette(palette: "fire" | "plasma" | "ghost"): void;
   onSubjectColor(color: string): void;
   initialSubjectColor: string;
 };
 
-const DEFAULT_CONTROL_VALUES: PlaygroundDialValues = {
-  subject: { size: 46, leftRight: 0, upDown: 1 },
-  fire: {
-    treatment: "material",
-    direction: "64",
-    blend: "normal",
-    intensity: 53,
-    spread: 8,
-    insideGlow: 55.5,
-    sharpness: 85,
+const SHOWCASE_PRESETS: Record<Exclude<ShowcasePresetId, "current">, ShowcasePresetValues> = {
+  "brand-mark": {
+    subject: { size: 46, leftRight: 0, upDown: 1 },
+    fire: {
+      treatment: "material",
+      direction: "64",
+      blend: "normal",
+      intensity: 53,
+      spread: 8,
+      insideGlow: 55.5,
+      sharpness: 85,
+    },
+    motion: { speed: 40, flicker: 24, shimmer: 19, grain: 44 },
   },
-  motion: { speed: 40, flicker: 24, shimmer: 19, grain: 44 },
+  "burning-painting": {
+    subject: { size: 60, leftRight: 0, upDown: 0 },
+    fire: {
+      treatment: "edge",
+      direction: "0",
+      blend: "normal",
+      intensity: 24,
+      spread: 20,
+      insideGlow: 36,
+      sharpness: 88,
+    },
+    motion: { speed: 28, flicker: 18, shimmer: 22, grain: 52 },
+  },
+  "violet-type": {
+    subject: { size: 64, leftRight: 0, upDown: 0 },
+    fire: {
+      treatment: "material",
+      direction: "0",
+      blend: "normal",
+      intensity: 56,
+      spread: 10,
+      insideGlow: 58,
+      sharpness: 85,
+    },
+    motion: { speed: 38, flicker: 24, shimmer: 20, grain: 44 },
+  },
+  "paper-flame": {
+    subject: { size: 55, leftRight: 0, upDown: 0 },
+    fire: {
+      treatment: "edge",
+      direction: "full",
+      blend: "normal",
+      intensity: 17,
+      spread: 23,
+      insideGlow: 40,
+      sharpness: 88,
+    },
+    motion: { speed: 30, flicker: 20, shimmer: 26, grain: 46 },
+  },
+};
+
+const PRESET_LABELS: Record<ShowcasePresetId, string> = {
+  current: "Current setup",
+  "brand-mark": "Brand mark",
+  "burning-painting": "Burning painting",
+  "violet-type": "Violet type",
+  "paper-flame": "Paper flame",
+};
+
+const DEFAULT_CONTROL_VALUES: PlaygroundDialValues = {
+  presets: { preset: "current" },
+  ...SHOWCASE_PRESETS["brand-mark"],
 };
 
 const controls = {
+  presets: {
+    preset: {
+      type: "select" as const,
+      default: DEFAULT_CONTROL_VALUES.presets.preset,
+      options: [
+        { value: "current", label: PRESET_LABELS.current },
+        { value: "brand-mark", label: PRESET_LABELS["brand-mark"] },
+        { value: "burning-painting", label: PRESET_LABELS["burning-painting"] },
+        { value: "violet-type", label: PRESET_LABELS["violet-type"] },
+        { value: "paper-flame", label: PRESET_LABELS["paper-flame"] },
+      ],
+    },
+    resetToDefault: {
+      type: "action" as const,
+      label: "Reset to default",
+    },
+  },
   subject: {
     size: [DEFAULT_CONTROL_VALUES.subject.size, 15, 95, 1] as [number, number, number, number],
     leftRight: [DEFAULT_CONTROL_VALUES.subject.leftRight, -30, 30, 1] as [number, number, number, number],
@@ -99,25 +211,70 @@ const controls = {
     shimmer: [DEFAULT_CONTROL_VALUES.motion.shimmer, 0, 100, 1] as [number, number, number, number],
     grain: [DEFAULT_CONTROL_VALUES.motion.grain, 0, 100, 1] as [number, number, number, number],
   },
-  resetToDefault: {
-    type: "action" as const,
-    label: "Reset to default",
-  },
 };
 
-function ControlRegistration({ onValues, onAction }: DialKitCallbacks) {
+function ControlRegistration({ onValues, onAction, onPreset }: DialKitCallbacks) {
+  const appliedPreset = useRef<ShowcasePresetId | null>(null);
+  const currentSetupValues = useRef<ShowcasePresetValues | null>(readCurrentSetupValues());
   const controller = useDialKitController("Controls", controls, {
     id: "fayaaa-controls",
     persist: { key: "fayaaa.playground.controls.v1", storage: "localStorage" },
     onAction: (action) => {
-      if (action === "resetToDefault") controller.setValues(DEFAULT_CONTROL_VALUES);
-      onAction(action);
+      if (action !== "presets.resetToDefault") return;
+      const selectedPreset = controller.values.presets.preset as ShowcasePresetId;
+      appliedPreset.current = selectedPreset;
+      controller.setValues({
+        ...DEFAULT_CONTROL_VALUES,
+        presets: { preset: selectedPreset },
+      });
+      onAction("resetToDefault");
     },
   });
   const previousDirection = useRef(String(controller.values.fire.direction));
 
   useEffect(() => {
     const values = controller.values as unknown as PlaygroundDialValues;
+    const storedPreset = values.presets.preset as string;
+    if (storedPreset !== "current" && !(storedPreset in SHOWCASE_PRESETS)) {
+      appliedPreset.current = "current";
+      controller.setValues({ presets: { preset: "current" } });
+      return;
+    }
+    const selectedPreset = values.presets.preset;
+
+    if (appliedPreset.current === null) {
+      appliedPreset.current = selectedPreset;
+      if (selectedPreset !== "current") {
+        controller.setValues(SHOWCASE_PRESETS[selectedPreset]);
+        onPreset(selectedPreset);
+        return;
+      }
+    } else if (selectedPreset !== appliedPreset.current) {
+      if (appliedPreset.current === "current" && selectedPreset !== "current") {
+        const currentValues = {
+          subject: { ...values.subject },
+          fire: { ...values.fire },
+          motion: { ...values.motion },
+        };
+        currentSetupValues.current = currentValues;
+        saveCurrentSetupValues(currentValues);
+      }
+      appliedPreset.current = selectedPreset;
+      if (selectedPreset === "current") {
+        if (currentSetupValues.current) controller.setValues(currentSetupValues.current);
+      } else {
+        controller.setValues(SHOWCASE_PRESETS[selectedPreset]);
+      }
+      onPreset(selectedPreset);
+      return;
+    }
+
+    if (selectedPreset === "current") {
+      const currentValues = copyShowcaseValues(values);
+      currentSetupValues.current = currentValues;
+      saveCurrentSetupValues(currentValues);
+    }
+
     const enteredFull = values.fire.direction === "full" && previousDirection.current !== "full";
     previousDirection.current = values.fire.direction;
 
@@ -127,7 +284,7 @@ function ControlRegistration({ onValues, onAction }: DialKitCallbacks) {
     }
 
     onValues(values);
-  }, [controller.values, controller.setValues, onValues]);
+  }, [controller.values, controller.setValues, onPreset, onValues]);
 
   return null;
 }

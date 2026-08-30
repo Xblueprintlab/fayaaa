@@ -55,13 +55,16 @@ a {
 .control-rail {
   display: flex;
   min-width: 0;
+  min-height: 0;
   height: 100dvh;
   flex-direction: column;
   overflow-y: auto;
-  padding: 24px 24px 16px;
+  padding: 24px 24px 32px;
   background: var(--rail-bg);
   overscroll-behavior: contain;
   scrollbar-width: none;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
 }
 
 .control-rail::-webkit-scrollbar { display: none; }
@@ -88,6 +91,7 @@ a {
 
 .dialkit-mount {
   flex: 0 0 auto;
+  margin-bottom: 32px;
   overflow: visible;
 }
 
@@ -95,7 +99,7 @@ a {
   position: relative;
   display: flex;
   flex: 0 0 auto;
-  margin-top: auto;
+  margin-top: 0;
   align-items: center;
   justify-content: space-between;
   gap: 8px;

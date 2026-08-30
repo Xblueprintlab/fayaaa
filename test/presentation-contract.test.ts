@@ -29,7 +29,9 @@ it("returns canonical Fire exactly on a solid background and preserves alpha for
   expect(source).toContain("presentResult(base, input, params)");
   expect(source).toContain("presentEdgeBurn(base, input, params)");
   expect(source).toContain("return vec4f(base * alpha, alpha);");
-  expect(source).toContain("let insideAmount = clamp(p.innerGlow * 0.5, 0.0, 1.0);");
+  expect(source).toContain(
+    "let insideAmount = select(clamp(p.innerGlow * 0.5, 0.0, 1.0), 1.0, g.blendMode < 0.5);",
+  );
   expect(source).toContain("outerGlow * (1.0 - inside)");
 });
 
@@ -72,10 +74,50 @@ it("persists controls, composition settings, and uploaded assets across refreshe
 it("resets only control parameters while preserving the subject and composition", () => {
   const controls = readFileSync(controlsPath, "utf8");
   const main = readFileSync(mainPath, "utf8");
+  expect(controls.indexOf("presets: {")).toBeLessThan(controls.indexOf("subject: {"));
+  expect(controls).toContain('action !== "presets.resetToDefault"');
   expect(controls).toContain('label: "Reset to default"');
-  expect(controls).toContain('controller.setValues(DEFAULT_CONTROL_VALUES)');
-  expect(main).toContain('action !== "resetToDefault"');
+  expect(controls).toContain('presets: { preset: selectedPreset }');
+  expect(main).toContain('action === "resetToDefault"');
   expect(main).toContain('announce("Parameters reset to default")');
+});
+
+it("offers complete showcase scenes without replacing the saved current setup", () => {
+  const controls = readFileSync(controlsPath, "utf8");
+  const main = readFileSync(mainPath, "utf8");
+  expect(controls).toContain('{ value: "current", label: PRESET_LABELS.current }');
+  expect(controls).toContain('{ value: "burning-painting", label: PRESET_LABELS["burning-painting"] }');
+  expect(controls).toContain('{ value: "violet-type", label: PRESET_LABELS["violet-type"] }');
+  expect(controls).toContain('{ value: "paper-flame", label: PRESET_LABELS["paper-flame"] }');
+  expect(main).toContain("captureCurrentSetup();");
+  expect(main).toContain('announce("Current setup restored")');
+  expect(main).not.toContain('deletePlaygroundAsset("subject")');
+  expect(main).not.toContain('deletePlaygroundAsset("background")');
+});
+
+it("burns the artwork as a subject instead of hanging it behind the fire", () => {
+  const main = readFileSync(mainPath, "utf8");
+  const sceneStart = main.indexOf('"burning-painting": {');
+  const sceneEnd = main.indexOf('"violet-type": {');
+  expect(sceneStart).toBeGreaterThan(-1);
+  const scene = main.slice(sceneStart, sceneEnd);
+  expect(scene).toContain('url: "/art-painting.jpg"');
+  expect(scene).toContain("supportsBurnAround: true");
+  expect(scene).toContain('background: { mode: "color"');
+  expect(scene).not.toContain('mode: "image"');
+});
+
+it("rasterizes vector subjects at full pipeline resolution instead of intrinsic size", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain('const isVector = blob.type === "image/svg+xml";');
+  expect(main).toContain("isVector ? max / largest : Math.min(1, max / largest)");
+});
+
+it("keeps the Normal fire body opaque over image and transparent backgrounds", () => {
+  const composite = readFileSync(compositePath, "utf8");
+  expect(composite).toContain(
+    "select(clamp(p.innerGlow * 0.5, 0.0, 1.0), 1.0, g.blendMode < 0.5)",
+  );
 });
 
 it("offers both image compositing treatments with a real raster sample", () => {

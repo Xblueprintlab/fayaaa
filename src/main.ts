@@ -10,7 +10,11 @@ import {
 } from "mediabunny";
 import type { VideoCodec } from "mediabunny";
 import { computeRect, DEFAULTS, inferMaskMode } from "../shared/params.mjs";
-import { mountDialKit, type PlaygroundDialValues } from "./dialkit-controls";
+import {
+  mountDialKit,
+  type PlaygroundDialValues,
+  type ShowcasePresetId,
+} from "./dialkit-controls";
 import { mountMobileControls } from "./mobile-controls";
 import { mountPlayground } from "./playground-page";
 import { EffectTransition, effectLoopTarget, type EffectPhase } from "./effect-transition";
@@ -56,6 +60,35 @@ type RasterizedSource = {
   // Burn around is an image-only presentation. Intro art, text, and the
   // built-in icon marks always use the canonical Fire compositor.
   supportsBurnAround?: boolean;
+};
+
+type ShowcaseScene = {
+  label: string;
+  look: LookId;
+  subjectColor: string;
+  subject:
+    | { kind: "image"; url: string; name: string; supportsBurnAround: boolean }
+    | { kind: "text"; value: string };
+  background:
+    | { mode: "color"; color: string }
+    | { mode: "image"; url: string; name: string }
+    | { mode: "transparent" };
+};
+
+type CurrentSetupSnapshot = {
+  source: RasterizedSource;
+  backgroundSource?: RasterizedSource;
+  backgroundMode: BackgroundMode;
+  colors: {
+    baseColor: string;
+    rimColor: string;
+    hotColor: string;
+    coolColor: string;
+    bgColor: string;
+  };
+  look: LookId;
+  subjectColor: string;
+  text: string;
 };
 
 type EffectIntent = "auto" | "source" | "result";
@@ -144,6 +177,52 @@ const LOOK_LABELS: Record<LookId, string> = {
   fire: "Fire",
   plasma: "Violet",
   ghost: "Mint",
+};
+
+const SHOWCASE_SCENES: Record<Exclude<ShowcasePresetId, "current">, ShowcaseScene> = {
+  "brand-mark": {
+    label: "Brand mark",
+    look: "fire",
+    subjectColor: String(DEFAULTS.baseColor),
+    subject: {
+      kind: "image",
+      url: "/artifact-mark.svg",
+      name: "Artifact",
+      supportsBurnAround: false,
+    },
+    background: { mode: "color", color: "#180e01" },
+  },
+  "burning-painting": {
+    label: "Burning painting",
+    look: "fire",
+    subjectColor: String(DEFAULTS.baseColor),
+    subject: {
+      kind: "image",
+      url: "/art-painting.jpg",
+      name: "Oil painting",
+      supportsBurnAround: true,
+    },
+    background: { mode: "color", color: "#0d0702" },
+  },
+  "violet-type": {
+    label: "Violet type",
+    look: "plasma",
+    subjectColor: "#080610",
+    subject: { kind: "text", value: "FAYAAA" },
+    background: { mode: "color", color: "#08060f" },
+  },
+  "paper-flame": {
+    label: "Paper flame",
+    look: "fire",
+    subjectColor: String(DEFAULTS.baseColor),
+    subject: {
+      kind: "image",
+      url: "/fayaaa-mark.png",
+      name: "Fayaaa flame",
+      supportsBurnAround: true,
+    },
+    background: { mode: "color", color: "#120a04" },
+  },
 };
 
 const SHADER_BLEND_CSS: Record<ShaderBlend, string> = {
@@ -387,6 +466,8 @@ let backgroundImageLoader: ((blob: Blob, name?: string) => Promise<void>) | unde
 let backgroundModeController: ((mode: BackgroundMode) => void) | undefined;
 let backgroundColorController: ((color: string) => void) | undefined;
 let subjectColorController: ((color: string) => void) | undefined;
+let showcasePresetController: ((preset: ShowcasePresetId) => Promise<void>) | undefined;
+let pendingShowcasePreset: ShowcasePresetId | undefined;
 let videoRecorder: ((settings: VideoExportSettings) => Promise<void>) | undefined;
 let textSubjectValue = restoredSettings.text ?? "Fayaaa";
 let textEditorStartValue = textSubjectValue;
@@ -810,8 +891,14 @@ const dialkitCleanup = mountDialKit(required<HTMLElement>("#dialkit-root"), {
     });
   },
   onAction(action) {
-    if (action !== "resetToDefault") return;
-    announce("Parameters reset to default");
+    if (action === "resetToDefault") {
+      announce("Parameters reset to default");
+      return;
+    }
+  },
+  onPreset(preset) {
+    if (showcasePresetController) void showcasePresetController(preset);
+    else pendingShowcasePreset = preset;
   },
   onPalette(look) {
     requestedLook = look;
@@ -1296,7 +1383,13 @@ void (async () => {
         image.src = url;
         await image.decode();
         const max = 1024;
-        const ratio = Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight));
+        // SVGs re-rasterize losslessly at any scale, so draw them at the full
+        // pipeline resolution — their intrinsic size (often a tiny viewBox
+        // default like 150px) would otherwise staircase every magnified edge.
+        // Bitmaps keep the no-upscale rule; enlarging them adds nothing.
+        const isVector = blob.type === "image/svg+xml";
+        const largest = Math.max(image.naturalWidth, image.naturalHeight) || max;
+        const ratio = isVector ? max / largest : Math.min(1, max / largest);
         const staging = document.createElement("canvas");
         staging.width = Math.max(1, Math.round(image.naturalWidth * ratio));
         staging.height = Math.max(1, Math.round(image.naturalHeight * ratio));
@@ -1317,7 +1410,11 @@ void (async () => {
       }
     }
 
-    async function sourceFromUrl(url: string, name: string): Promise<RasterizedSource> {
+    async function sourceFromUrl(
+      url: string,
+      name: string,
+      supportsBurnAround = false,
+    ): Promise<RasterizedSource> {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`${name} request failed: ${response.status}`);
       return {
@@ -1325,7 +1422,7 @@ void (async () => {
         name,
         previewUrl: url,
         kind: "image",
-        supportsBurnAround: false,
+        supportsBurnAround,
       };
     }
 
@@ -1512,6 +1609,7 @@ void (async () => {
     // The intro only plays on a default boot: motion allowed, image subject,
     // and no restored upload. Otherwise reveal the chrome right away.
     const introPlanned =
+      !pendingShowcasePreset &&
       !hotReloaded &&
       !reducedMotion.matches &&
       (introForced ||
@@ -1535,6 +1633,152 @@ void (async () => {
       restartSourceReveal();
     } else {
       await sourceController(previewMode);
+    }
+
+    let currentSetupSnapshot: CurrentSetupSnapshot | undefined;
+    let showcaseRequest = 0;
+    const showcaseImageCache = new Map<string, RasterizedSource>();
+
+    const loadShowcaseImage = async (
+      url: string,
+      name: string,
+      supportsBurnAround = false,
+    ): Promise<RasterizedSource> => {
+      const key = `${url}:${supportsBurnAround}`;
+      const cached = showcaseImageCache.get(key);
+      if (cached) return cached;
+      const source = await sourceFromUrl(url, name, supportsBurnAround);
+      showcaseImageCache.set(key, source);
+      return source;
+    };
+
+    const captureCurrentSetup = (): void => {
+      if (currentSetupSnapshot || !currentSource) return;
+      currentSetupSnapshot = {
+        source: currentSource,
+        backgroundSource,
+        backgroundMode,
+        colors: {
+          baseColor: String(state.baseColor),
+          rimColor: String(state.rimColor),
+          hotColor: String(state.hotColor),
+          coolColor: String(state.coolColor),
+          bgColor: String(state.bgColor),
+        },
+        look: requestedLook,
+        subjectColor,
+        text: textSubjectValue,
+      };
+    };
+
+    const applyLookInstantly = (look: LookId, backgroundColor?: string): void => {
+      cancelAnimationFrame(lookAnimationFrame);
+      lookAnimationFrame = 0;
+      requestedLook = look;
+      const colors = LOOKS[look] as Record<(typeof LOOK_COLOR_KEYS)[number], string>;
+      for (const key of LOOK_COLOR_KEYS) state[key] = colors[key];
+      if (backgroundColor) state.bgColor = backgroundColor;
+      syncLookUi(look);
+      currentPipeline.applyEmberParams(state);
+    };
+
+    showcasePresetController = async (preset) => {
+      if (captureBusy || exportRecording) {
+        announce("Finish the current export before changing the preset.");
+        return;
+      }
+
+      const request = ++showcaseRequest;
+      closeToolbarMenus();
+      closeStageTextEditor();
+
+      if (preset === "current") {
+        const snapshot = currentSetupSnapshot;
+        if (!snapshot) {
+          announce("Current setup is already active");
+          return;
+        }
+        sourceSelectionVersion += 1;
+        cancelPendingSourceSwap();
+        requestedLook = snapshot.look;
+        subjectColor = snapshot.subjectColor;
+        textSubjectValue = snapshot.text;
+        Object.assign(state, snapshot.colors);
+        subjectColorController?.(subjectColor);
+        syncLookUi(snapshot.look);
+        backgroundSource = snapshot.backgroundSource;
+        backgroundMode = snapshot.backgroundMode;
+        if (backgroundSource) {
+          backgroundPreview.src = backgroundSource.previewUrl;
+          backgroundFileName.textContent = backgroundSource.name;
+        }
+        syncBackgroundUi();
+        commitSource(snapshot.source);
+        restartSourceReveal();
+        persistPlayground();
+        announce("Current setup restored");
+        return;
+      }
+
+      captureCurrentSetup();
+      const scene = SHOWCASE_SCENES[preset];
+      const subjectPromise = scene.subject.kind === "text"
+        ? Promise.resolve<RasterizedSource>((() => {
+          const sourceCanvas = createTypeSource(scene.subject.value);
+          return {
+            canvas: sourceCanvas,
+            hasAlpha: true,
+            autoMaskMode: "alpha",
+            aspect: sourceCanvas.width / sourceCanvas.height,
+            name: scene.subject.value,
+            previewUrl: sourceCanvas.toDataURL("image/png"),
+            kind: "text",
+            supportsBurnAround: false,
+          };
+        })())
+        : loadShowcaseImage(
+          scene.subject.url,
+          scene.subject.name,
+          scene.subject.supportsBurnAround,
+        );
+      const backgroundPromise = scene.background.mode === "image"
+        ? loadShowcaseImage(scene.background.url, scene.background.name)
+        : Promise.resolve(undefined);
+
+      try {
+        const [subject, sceneBackground] = await Promise.all([subjectPromise, backgroundPromise]);
+        if (request !== showcaseRequest) return;
+        sourceSelectionVersion += 1;
+        cancelPendingSourceSwap();
+        subjectColor = scene.subjectColor;
+        state.baseColor = scene.subjectColor;
+        subjectColorController?.(scene.subjectColor);
+        applyLookInstantly(
+          scene.look,
+          scene.background.mode === "color" ? scene.background.color : undefined,
+        );
+        if (sceneBackground) {
+          backgroundSource = sceneBackground;
+          backgroundPreview.src = sceneBackground.previewUrl;
+          backgroundFileName.textContent = sceneBackground.name;
+        }
+        backgroundMode = scene.background.mode;
+        syncBackgroundUi();
+        if (scene.subject.kind === "text") textSubjectValue = scene.subject.value;
+        commitSource(subject);
+        restartSourceReveal();
+        persistPlayground();
+        announce(`${scene.label} preset applied`);
+      } catch (error) {
+        console.error(error);
+        announce("That preset could not be loaded.");
+      }
+    };
+
+    if (pendingShowcasePreset) {
+      const preset = pendingShowcasePreset;
+      pendingShowcasePreset = undefined;
+      void showcasePresetController(preset);
     }
 
     function updateExportDetails(): void {
