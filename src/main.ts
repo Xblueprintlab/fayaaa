@@ -2,19 +2,38 @@ import { clock, frame, frameLoop, init, surface } from "vgpu";
 import type { FrameLoopHandle } from "vgpu";
 import {
   BufferTarget,
+  BlobSource,
+  ALL_FORMATS,
   CanvasSource,
   getEncodableVideoCodecs,
+  Mp4OutputFormat,
+  Input,
   Output,
   Quality,
   WebMOutputFormat,
 } from "mediabunny";
 import type { VideoCodec } from "mediabunny";
 import { computeRect, DEFAULTS, inferMaskMode } from "../shared/params.mjs";
-import { mountDialKit, type PlaygroundDialValues } from "./dialkit-controls";
+import {
+  mountDialKit,
+  type PlaygroundDialValues,
+  type ShowcasePresetId,
+} from "./dialkit-controls";
+import {
+  mountExportDialKit,
+  type ExportDialValues,
+} from "./export-dialkit-controls";
 import { mountMobileControls } from "./mobile-controls";
 import { mountPlayground } from "./playground-page";
 import { EffectTransition, effectLoopTarget, type EffectPhase } from "./effect-transition";
 import { downloadBlob } from "./export-utils";
+import {
+  chooseVideoFormat,
+  clampFrame,
+  exportDimensions,
+  VIDEO_BITRATES,
+  type ExportSettings,
+} from "./export-config";
 import { FireAudio } from "./fire-audio";
 import {
   clearPlaygroundAsset,
@@ -36,15 +55,7 @@ type HeatDirection = number | "full";
 type ShaderBlend = "normal" | "screen" | "add" | "multiply" | "overlay";
 type ImageTreatment = "edge" | "material";
 type AutomaticMaskMode = "alpha" | "dark" | "bright";
-type VideoRatio = "16:9" | "1:1" | "9:16";
-type VideoQuality = "standard" | "high" | "max";
-type VideoExportSettings = {
-  ratio: VideoRatio;
-  fps: 24 | 30 | 60;
-  quality: VideoQuality;
-  frameX: number;
-  frameY: number;
-};
+type VideoExportSettings = ExportSettings;
 type RasterizedSource = {
   canvas: HTMLCanvasElement;
   hasAlpha: boolean;
@@ -56,6 +67,35 @@ type RasterizedSource = {
   // Burn around is an image-only presentation. Intro art, text, and the
   // built-in icon marks always use the canonical Fire compositor.
   supportsBurnAround?: boolean;
+};
+
+type ShowcaseScene = {
+  label: string;
+  look: LookId;
+  subjectColor: string;
+  subject:
+    | { kind: "image"; url: string; name: string; supportsBurnAround: boolean }
+    | { kind: "text"; value: string };
+  background:
+    | { mode: "color"; color: string }
+    | { mode: "image"; url: string; name: string }
+    | { mode: "transparent" };
+};
+
+type CurrentSetupSnapshot = {
+  source: RasterizedSource;
+  backgroundSource?: RasterizedSource;
+  backgroundMode: BackgroundMode;
+  colors: {
+    baseColor: string;
+    rimColor: string;
+    hotColor: string;
+    coolColor: string;
+    bgColor: string;
+  };
+  look: LookId;
+  subjectColor: string;
+  text: string;
 };
 
 type EffectIntent = "auto" | "source" | "result";
@@ -92,11 +132,10 @@ type PresentationSnapshot = {
 
 const EXPORT_WIDTH = 1280;
 const EXPORT_HEIGHT = 720;
-const CLIP_SECONDS = 3;
 const VIDEO_QUALITIES = {
-  standard: { edge: 720, bitrate: 6_000_000, label: "720p" },
-  high: { edge: 1080, bitrate: 12_000_000, label: "1080p" },
-  max: { edge: 1440, bitrate: 24_000_000, label: "1440p" },
+  standard: { bitrate: VIDEO_BITRATES.standard, label: "720p" },
+  high: { bitrate: VIDEO_BITRATES.high, label: "1080p" },
+  max: { bitrate: VIDEO_BITRATES.max, label: "1440p" },
 } as const;
 const SHAPE_SOURCE_OPACITY = 0.82;
 const PAPER_SOURCE_OPACITY = 0.9;
@@ -144,6 +183,52 @@ const LOOK_LABELS: Record<LookId, string> = {
   fire: "Fire",
   plasma: "Violet",
   ghost: "Mint",
+};
+
+const SHOWCASE_SCENES: Record<Exclude<ShowcasePresetId, "current">, ShowcaseScene> = {
+  "brand-mark": {
+    label: "Brand mark",
+    look: "fire",
+    subjectColor: String(DEFAULTS.baseColor),
+    subject: {
+      kind: "image",
+      url: "/artifact-mark.svg",
+      name: "Artifact",
+      supportsBurnAround: false,
+    },
+    background: { mode: "color", color: "#180e01" },
+  },
+  "burning-painting": {
+    label: "Burning painting",
+    look: "fire",
+    subjectColor: String(DEFAULTS.baseColor),
+    subject: {
+      kind: "image",
+      url: "/art-painting.jpg",
+      name: "Oil painting",
+      supportsBurnAround: true,
+    },
+    background: { mode: "color", color: "#0d0702" },
+  },
+  "violet-type": {
+    label: "Violet type",
+    look: "plasma",
+    subjectColor: "#080610",
+    subject: { kind: "text", value: "FAYAAA" },
+    background: { mode: "color", color: "#08060f" },
+  },
+  "paper-flame": {
+    label: "Paper flame",
+    look: "fire",
+    subjectColor: String(DEFAULTS.baseColor),
+    subject: {
+      kind: "image",
+      url: "/fayaaa-mark.png",
+      name: "Fayaaa flame",
+      supportsBurnAround: true,
+    },
+    background: { mode: "color", color: "#120a04" },
+  },
 };
 
 const SHADER_BLEND_CSS: Record<ShaderBlend, string> = {
@@ -201,6 +286,10 @@ const videoExportModal = required<HTMLElement>("#video-export-modal");
 const videoFramePreview = required<HTMLCanvasElement>("#video-frame-preview");
 const videoExportSummary = required<HTMLOutputElement>("#video-export-summary");
 const videoExportConfirm = required<HTMLButtonElement>(".video-export-confirm");
+const exportProgress = required<HTMLElement>("#export-progress");
+const exportProgressTitle = required<HTMLElement>("#export-progress-title");
+const exportProgressDetail = required<HTMLElement>("#export-progress-detail");
+const exportProgressMeter = required<HTMLProgressElement>("#export-progress-meter");
 const demoShell = required<HTMLElement>("#demo-shell");
 const fileInput = required<HTMLInputElement>("#file");
 const backgroundFileInput = required<HTMLInputElement>("#background-file");
@@ -387,7 +476,14 @@ let backgroundImageLoader: ((blob: Blob, name?: string) => Promise<void>) | unde
 let backgroundModeController: ((mode: BackgroundMode) => void) | undefined;
 let backgroundColorController: ((color: string) => void) | undefined;
 let subjectColorController: ((color: string) => void) | undefined;
-let videoRecorder: ((settings: VideoExportSettings) => Promise<void>) | undefined;
+let showcasePresetController: ((preset: ShowcasePresetId) => Promise<void>) | undefined;
+let pendingShowcasePreset: ShowcasePresetId | undefined;
+let videoRecorder: ((settings: VideoExportSettings, signal: AbortSignal) => Promise<void>) | undefined;
+let imageExporter: ((settings: VideoExportSettings, signal: AbortSignal) => Promise<void>) | undefined;
+let exportAbortController: AbortController | undefined;
+let exportDialkitCleanup: (() => void) | undefined;
+let exportRunning = false;
+let exportReturnFocus: HTMLElement | undefined;
 let textSubjectValue = restoredSettings.text ?? "Fayaaa";
 let textEditorStartValue = textSubjectValue;
 let textEditorOpen = false;
@@ -421,19 +517,14 @@ let videoPreviewFrame = 0;
 
 function updateVideoExportUi(): void {
   const [width, height] = videoDimensions(videoExportSettings);
+  const isVideo = videoExportSettings.kind === "video";
   videoFramePreview.style.aspectRatio = `${width} / ${height}`;
   videoFramePreview.dataset.ratio = videoExportSettings.ratio;
-  videoExportSummary.value = `${width} × ${height} · ${videoExportSettings.fps} FPS`;
+  videoExportSummary.value = isVideo
+    ? `${width} × ${height} · ${videoExportSettings.fps} FPS · ${videoExportSettings.duration}s`
+    : `${width} × ${height} · lossless PNG`;
   videoExportSummary.textContent = videoExportSummary.value;
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-ratio]")) {
-    button.setAttribute("aria-pressed", String(button.dataset.videoRatio === videoExportSettings.ratio));
-  }
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-fps]")) {
-    button.setAttribute("aria-pressed", String(Number(button.dataset.videoFps) === videoExportSettings.fps));
-  }
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-quality]")) {
-    button.setAttribute("aria-pressed", String(button.dataset.videoQuality === videoExportSettings.quality));
-  }
+  videoExportConfirm.textContent = isVideo ? "Download video" : "Download image";
 }
 
 function drawVideoFramePreview(): void {
@@ -456,10 +547,12 @@ function drawVideoFramePreview(): void {
   let cropHeight = canvas.height;
   if (sourceAspect > targetAspect) cropWidth = canvas.height * targetAspect;
   else cropHeight = canvas.width / targetAspect;
+  cropWidth /= videoExportSettings.scale;
+  cropHeight /= videoExportSettings.scale;
   const travelX = Math.max(0, canvas.width - cropWidth) * 0.5;
   const travelY = Math.max(0, canvas.height - cropHeight) * 0.5;
-  const sourceX = (canvas.width - cropWidth) * 0.5 - videoExportSettings.frameX * travelX;
-  const sourceY = (canvas.height - cropHeight) * 0.5 - videoExportSettings.frameY * travelY;
+  const sourceX = (canvas.width - cropWidth) * 0.5 + videoExportSettings.frameX * travelX;
+  const sourceY = (canvas.height - cropHeight) * 0.5 + videoExportSettings.frameY * travelY;
   context.clearRect(0, 0, videoFramePreview.width, videoFramePreview.height);
   context.drawImage(
     canvas,
@@ -477,46 +570,37 @@ function drawVideoFramePreview(): void {
 
 function openVideoExport(): void {
   closeToolbarMenus();
+  exportReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  // Every export starts from the composition exactly as it exists on the
+  // playground. Reframing remains available inside this modal, but stale
+  // export-only zoom/offsets must never override the user's tuned dials.
+  videoExportSettings.frameX = 0;
+  videoExportSettings.frameY = 0;
+  videoExportSettings.scale = 1;
   videoExportOpen = true;
   videoExportModal.hidden = false;
   document.body.classList.add("video-export-open");
+  mountVideoExportControls();
   updateVideoExportUi();
   cancelAnimationFrame(videoPreviewFrame);
   videoPreviewFrame = requestAnimationFrame(drawVideoFramePreview);
-  required<HTMLButtonElement>(".video-export-close").focus();
+  required<HTMLButtonElement>(".video-export-close").focus({ preventScroll: true });
 }
 
 function closeVideoExport(): void {
+  if (exportRunning) {
+    exportAbortController?.abort();
+    exportRunning = false;
+    exportProgress.hidden = true;
+    videoExportConfirm.disabled = false;
+  }
   videoExportOpen = false;
   videoExportModal.hidden = true;
   document.body.classList.remove("video-export-open");
   cancelAnimationFrame(videoPreviewFrame);
-}
-
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-ratio]")) {
-  button.addEventListener("click", () => {
-    videoExportSettings.ratio = button.dataset.videoRatio as VideoRatio;
-    videoExportSettings.frameX = 0;
-    videoExportSettings.frameY = 0;
-    updateVideoExportUi();
-    persistPlayground();
-  });
-}
-
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-fps]")) {
-  button.addEventListener("click", () => {
-    videoExportSettings.fps = Number(button.dataset.videoFps) as 24 | 30 | 60;
-    updateVideoExportUi();
-    persistPlayground();
-  });
-}
-
-for (const button of document.querySelectorAll<HTMLButtonElement>("[data-video-quality]")) {
-  button.addEventListener("click", () => {
-    videoExportSettings.quality = button.dataset.videoQuality as VideoQuality;
-    updateVideoExportUi();
-    persistPlayground();
-  });
+  exportDialkitCleanup?.();
+  exportDialkitCleanup = undefined;
+  exportReturnFocus?.focus();
 }
 
 required<HTMLButtonElement>(".video-export-close").addEventListener("click", closeVideoExport);
@@ -540,8 +624,8 @@ videoFramePreview.addEventListener("pointerdown", (event) => {
 videoFramePreview.addEventListener("pointermove", (event) => {
   if (event.pointerId !== videoFramePointer) return;
   const bounds = videoFramePreview.getBoundingClientRect();
-  videoExportSettings.frameX = Math.max(-1, Math.min(1, videoFramePointerStart.frameX + ((event.clientX - videoFramePointerStart.x) / bounds.width) * 2));
-  videoExportSettings.frameY = Math.max(-1, Math.min(1, videoFramePointerStart.frameY + ((event.clientY - videoFramePointerStart.y) / bounds.height) * 2));
+  videoExportSettings.frameX = clampFrame(videoFramePointerStart.frameX - ((event.clientX - videoFramePointerStart.x) / bounds.width) * 2);
+  videoExportSettings.frameY = clampFrame(videoFramePointerStart.frameY - ((event.clientY - videoFramePointerStart.y) / bounds.height) * 2);
 });
 const stopVideoFrameDrag = (event: PointerEvent) => {
   if (event.pointerId !== videoFramePointer) return;
@@ -551,14 +635,39 @@ const stopVideoFrameDrag = (event: PointerEvent) => {
 videoFramePreview.addEventListener("pointerup", stopVideoFrameDrag);
 videoFramePreview.addEventListener("pointercancel", stopVideoFrameDrag);
 
-videoExportConfirm.addEventListener("click", () => {
-  if (!videoRecorder) return;
-  closeVideoExport();
-  void videoRecorder({ ...videoExportSettings });
+videoExportConfirm.addEventListener("click", async () => {
+  const exporter = videoExportSettings.kind === "video" ? videoRecorder : imageExporter;
+  if (!exporter || exportRunning) return;
+  const controller = new AbortController();
+  exportAbortController = controller;
+  exportRunning = true;
+  exportProgress.hidden = false;
+  videoExportConfirm.disabled = true;
+  try {
+    await exporter({ ...videoExportSettings }, controller.signal);
+    if (!controller.signal.aborted) {
+      exportRunning = false;
+      closeVideoExport();
+    }
+  } finally {
+    if (exportAbortController === controller) {
+      exportRunning = false;
+      exportProgress.hidden = true;
+      videoExportConfirm.disabled = false;
+      exportAbortController = undefined;
+    }
+  }
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && videoExportOpen) closeVideoExport();
+  if (event.key === "Tab" && videoExportOpen) {
+    const focusable = [...videoExportModal.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled])")].filter((item) => !item.closest("[hidden]"));
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+  }
 });
 
 function setSubjectTab(kind: SubjectKind): void {
@@ -810,8 +919,14 @@ const dialkitCleanup = mountDialKit(required<HTMLElement>("#dialkit-root"), {
     });
   },
   onAction(action) {
-    if (action !== "resetToDefault") return;
-    announce("Parameters reset to default");
+    if (action === "resetToDefault") {
+      announce("Parameters reset to default");
+      return;
+    }
+  },
+  onPreset(preset) {
+    if (showcasePresetController) void showcasePresetController(preset);
+    else pendingShowcasePreset = preset;
   },
   onPalette(look) {
     requestedLook = look;
@@ -1168,13 +1283,17 @@ let logoLoopTime = 0.08;
 let exportRecording = false;
 let captureBusy = false;
 let webmCodecs: VideoCodec[] = [];
+let encodableVideoCodecs: VideoCodec[] = [];
 let videoExportOpen = false;
 const videoExportSettings: VideoExportSettings = {
+  kind: restoredSettings.video?.kind ?? "image",
   ratio: restoredSettings.video?.ratio ?? "16:9",
   fps: restoredSettings.video?.fps ?? 30,
   quality: restoredSettings.video?.quality ?? "high",
+  duration: restoredSettings.video?.duration ?? 3,
   frameX: restoredSettings.video?.frameX ?? 0,
   frameY: restoredSettings.video?.frameY ?? 0,
+  scale: restoredSettings.video?.scale ?? 1,
 };
 
 function persistPlayground(): void {
@@ -1192,11 +1311,39 @@ function persistPlayground(): void {
   });
 }
 
+function mountVideoExportControls(): void {
+  exportDialkitCleanup?.();
+  exportDialkitCleanup = mountExportDialKit(
+    required<HTMLElement>("#export-dialkit-root"),
+    {
+      kind: videoExportSettings.kind,
+      ratio: videoExportSettings.ratio,
+      quality: videoExportSettings.quality,
+      scale: 100,
+      fps: videoExportSettings.fps,
+      duration: videoExportSettings.duration,
+    },
+    (values: ExportDialValues) => {
+      if (exportRunning) return;
+      const ratioChanged = values.ratio !== videoExportSettings.ratio;
+      videoExportSettings.kind = values.kind;
+      videoExportSettings.ratio = values.ratio;
+      videoExportSettings.quality = values.quality;
+      videoExportSettings.scale = values.scale / 100;
+      videoExportSettings.fps = values.fps;
+      videoExportSettings.duration = values.duration;
+      if (ratioChanged) {
+        videoExportSettings.frameX = 0;
+        videoExportSettings.frameY = 0;
+      }
+      updateVideoExportUi();
+      persistPlayground();
+    },
+  );
+}
+
 function videoDimensions(settings: VideoExportSettings): [number, number] {
-  const edge = VIDEO_QUALITIES[settings.quality].edge;
-  if (settings.ratio === "1:1") return [edge, edge];
-  if (settings.ratio === "9:16") return [edge, Math.round((edge * 16) / 9)];
-  return [Math.round((edge * 16) / 9), edge];
+  return exportDimensions(settings);
 }
 
 function syncMotionButton(): void {
@@ -1296,7 +1443,13 @@ void (async () => {
         image.src = url;
         await image.decode();
         const max = 1024;
-        const ratio = Math.min(1, max / Math.max(image.naturalWidth, image.naturalHeight));
+        // SVGs re-rasterize losslessly at any scale, so draw them at the full
+        // pipeline resolution — their intrinsic size (often a tiny viewBox
+        // default like 150px) would otherwise staircase every magnified edge.
+        // Bitmaps keep the no-upscale rule; enlarging them adds nothing.
+        const isVector = blob.type === "image/svg+xml";
+        const largest = Math.max(image.naturalWidth, image.naturalHeight) || max;
+        const ratio = isVector ? max / largest : Math.min(1, max / largest);
         const staging = document.createElement("canvas");
         staging.width = Math.max(1, Math.round(image.naturalWidth * ratio));
         staging.height = Math.max(1, Math.round(image.naturalHeight * ratio));
@@ -1317,7 +1470,11 @@ void (async () => {
       }
     }
 
-    async function sourceFromUrl(url: string, name: string): Promise<RasterizedSource> {
+    async function sourceFromUrl(
+      url: string,
+      name: string,
+      supportsBurnAround = false,
+    ): Promise<RasterizedSource> {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`${name} request failed: ${response.status}`);
       return {
@@ -1325,7 +1482,7 @@ void (async () => {
         name,
         previewUrl: url,
         kind: "image",
-        supportsBurnAround: false,
+        supportsBurnAround,
       };
     }
 
@@ -1512,6 +1669,7 @@ void (async () => {
     // The intro only plays on a default boot: motion allowed, image subject,
     // and no restored upload. Otherwise reveal the chrome right away.
     const introPlanned =
+      !pendingShowcasePreset &&
       !hotReloaded &&
       !reducedMotion.matches &&
       (introForced ||
@@ -1535,6 +1693,152 @@ void (async () => {
       restartSourceReveal();
     } else {
       await sourceController(previewMode);
+    }
+
+    let currentSetupSnapshot: CurrentSetupSnapshot | undefined;
+    let showcaseRequest = 0;
+    const showcaseImageCache = new Map<string, RasterizedSource>();
+
+    const loadShowcaseImage = async (
+      url: string,
+      name: string,
+      supportsBurnAround = false,
+    ): Promise<RasterizedSource> => {
+      const key = `${url}:${supportsBurnAround}`;
+      const cached = showcaseImageCache.get(key);
+      if (cached) return cached;
+      const source = await sourceFromUrl(url, name, supportsBurnAround);
+      showcaseImageCache.set(key, source);
+      return source;
+    };
+
+    const captureCurrentSetup = (): void => {
+      if (currentSetupSnapshot || !currentSource) return;
+      currentSetupSnapshot = {
+        source: currentSource,
+        backgroundSource,
+        backgroundMode,
+        colors: {
+          baseColor: String(state.baseColor),
+          rimColor: String(state.rimColor),
+          hotColor: String(state.hotColor),
+          coolColor: String(state.coolColor),
+          bgColor: String(state.bgColor),
+        },
+        look: requestedLook,
+        subjectColor,
+        text: textSubjectValue,
+      };
+    };
+
+    const applyLookInstantly = (look: LookId, backgroundColor?: string): void => {
+      cancelAnimationFrame(lookAnimationFrame);
+      lookAnimationFrame = 0;
+      requestedLook = look;
+      const colors = LOOKS[look] as Record<(typeof LOOK_COLOR_KEYS)[number], string>;
+      for (const key of LOOK_COLOR_KEYS) state[key] = colors[key];
+      if (backgroundColor) state.bgColor = backgroundColor;
+      syncLookUi(look);
+      currentPipeline.applyEmberParams(state);
+    };
+
+    showcasePresetController = async (preset) => {
+      if (captureBusy || exportRecording) {
+        announce("Finish the current export before changing the preset.");
+        return;
+      }
+
+      const request = ++showcaseRequest;
+      closeToolbarMenus();
+      closeStageTextEditor();
+
+      if (preset === "current") {
+        const snapshot = currentSetupSnapshot;
+        if (!snapshot) {
+          announce("Current setup is already active");
+          return;
+        }
+        sourceSelectionVersion += 1;
+        cancelPendingSourceSwap();
+        requestedLook = snapshot.look;
+        subjectColor = snapshot.subjectColor;
+        textSubjectValue = snapshot.text;
+        Object.assign(state, snapshot.colors);
+        subjectColorController?.(subjectColor);
+        syncLookUi(snapshot.look);
+        backgroundSource = snapshot.backgroundSource;
+        backgroundMode = snapshot.backgroundMode;
+        if (backgroundSource) {
+          backgroundPreview.src = backgroundSource.previewUrl;
+          backgroundFileName.textContent = backgroundSource.name;
+        }
+        syncBackgroundUi();
+        commitSource(snapshot.source);
+        restartSourceReveal();
+        persistPlayground();
+        announce("Current setup restored");
+        return;
+      }
+
+      captureCurrentSetup();
+      const scene = SHOWCASE_SCENES[preset];
+      const subjectPromise = scene.subject.kind === "text"
+        ? Promise.resolve<RasterizedSource>((() => {
+          const sourceCanvas = createTypeSource(scene.subject.value);
+          return {
+            canvas: sourceCanvas,
+            hasAlpha: true,
+            autoMaskMode: "alpha",
+            aspect: sourceCanvas.width / sourceCanvas.height,
+            name: scene.subject.value,
+            previewUrl: sourceCanvas.toDataURL("image/png"),
+            kind: "text",
+            supportsBurnAround: false,
+          };
+        })())
+        : loadShowcaseImage(
+          scene.subject.url,
+          scene.subject.name,
+          scene.subject.supportsBurnAround,
+        );
+      const backgroundPromise = scene.background.mode === "image"
+        ? loadShowcaseImage(scene.background.url, scene.background.name)
+        : Promise.resolve(undefined);
+
+      try {
+        const [subject, sceneBackground] = await Promise.all([subjectPromise, backgroundPromise]);
+        if (request !== showcaseRequest) return;
+        sourceSelectionVersion += 1;
+        cancelPendingSourceSwap();
+        subjectColor = scene.subjectColor;
+        state.baseColor = scene.subjectColor;
+        subjectColorController?.(scene.subjectColor);
+        applyLookInstantly(
+          scene.look,
+          scene.background.mode === "color" ? scene.background.color : undefined,
+        );
+        if (sceneBackground) {
+          backgroundSource = sceneBackground;
+          backgroundPreview.src = sceneBackground.previewUrl;
+          backgroundFileName.textContent = sceneBackground.name;
+        }
+        backgroundMode = scene.background.mode;
+        syncBackgroundUi();
+        if (scene.subject.kind === "text") textSubjectValue = scene.subject.value;
+        commitSource(subject);
+        restartSourceReveal();
+        persistPlayground();
+        announce(`${scene.label} preset applied`);
+      } catch (error) {
+        console.error(error);
+        announce("That preset could not be loaded.");
+      }
+    };
+
+    if (pendingShowcasePreset) {
+      const preset = pendingShowcasePreset;
+      pendingShowcasePreset = undefined;
+      void showcasePresetController(preset);
     }
 
     function updateExportDetails(): void {
@@ -1995,7 +2299,26 @@ void (async () => {
       });
     }
 
-    async function exportFrame(): Promise<void> {
+    function applyExportFraming(presentation: PresentationSnapshot, settings: VideoExportSettings, width: number, height: number): void {
+      presentation.params = {
+        ...presentation.params,
+        scale: Number(presentation.params.scale) * settings.scale,
+        offsetX: Number(presentation.params.offsetX) - settings.frameX * 0.18,
+        offsetY: Number(presentation.params.offsetY) - settings.frameY * 0.18,
+      };
+      presentation.sourceRect = presentation.source
+        ? getPresentationRect(presentation.sourceAspect, presentation.params, width, height)
+        : undefined;
+    }
+
+    function setExportProgress(title: string, progress: number): void {
+      const percent = Math.round(progress * 100);
+      exportProgressTitle.textContent = title;
+      exportProgressDetail.textContent = `${percent}%`;
+      exportProgressMeter.value = percent;
+    }
+
+    async function exportFrame(settings: VideoExportSettings = videoExportSettings, signal = new AbortController().signal): Promise<void> {
       if (pendingSourceSwap || pendingBlend) {
         announce("Wait for the new source to finish igniting before exporting.");
         return;
@@ -2008,34 +2331,49 @@ void (async () => {
         announce("Finish the current export first.");
         return;
       }
-      const presentation = capturePresentation(EXPORT_WIDTH, EXPORT_HEIGHT);
+      const [width, height] = videoDimensions(settings);
+      const presentation = capturePresentation(width, height);
+      applyExportFraming(presentation, settings, width, height);
       captureBusy = true;
       exportStatus.textContent = "Rendering the current composition…";
       try {
-        prepareCapture(presentation, EXPORT_WIDTH, EXPORT_HEIGHT);
+        setExportProgress("Rendering image", 0.2);
+        prepareCapture(presentation, width, height);
         const output = await renderCaptureFrame(
           presentation,
           presentation.animationTime,
           1,
-          EXPORT_WIDTH,
-          EXPORT_HEIGHT,
+          width,
+          height,
         );
-        downloadBlob(await canvasBlob(output), "fayaaa-frame.png");
-        exportStatus.textContent = "PNG exported with the current source, look, direction, and blend.";
+        if (signal.aborted) throw new DOMException("Export canceled", "AbortError");
+        setExportProgress("Encoding PNG", 0.8);
+        const png = await canvasBlob(output);
+        const verified = await createImageBitmap(png);
+        const verifiedWidth = verified.width;
+        const verifiedHeight = verified.height;
+        verified.close();
+        if (verifiedWidth !== width || verifiedHeight !== height || png.type !== "image/png") {
+          throw new Error("The encoded image did not match the requested export settings.");
+        }
+        downloadBlob(png, `fayaaa-${settings.ratio.replace(":", "x")}-${width}x${height}.png`);
+        setExportProgress("Image ready", 1);
+        exportStatus.textContent = `Verified ${verifiedWidth} × ${verifiedHeight} lossless PNG exported.`;
         announce("Fayaaa frame exported as PNG");
       } catch (error) {
-        const message = error instanceof Error ? error.message : "PNG export failed.";
+        const message = signal.aborted ? "Image export canceled." : error instanceof Error ? error.message : "PNG export failed.";
         exportStatus.textContent = message;
         announce(message);
       } finally {
         captureBusy = false;
       }
     }
+    imageExporter = exportFrame;
 
     for (const button of document.querySelectorAll<HTMLButtonElement>("[data-export-frame]")) {
       button.addEventListener("click", () => {
         setToolbarMenuOpen(downloadPicker, false);
-        void exportFrame();
+        openVideoExport();
       });
     }
     required<HTMLButtonElement>("#export").addEventListener("click", () => void exportFrame());
@@ -2052,17 +2390,19 @@ void (async () => {
       "#file, #background-file, #stage-text-input, #background-color",
     )];
 
-    async function encodeWebmClip(
+    async function encodeClip(
       presentation: PresentationSnapshot,
       codec: VideoCodec,
+      format: "mp4" | "webm",
       settings: VideoExportSettings,
       width: number,
       height: number,
+      signal: AbortSignal,
     ): Promise<Blob> {
       const quality = VIDEO_QUALITIES[settings.quality];
       const targetBuffer = new BufferTarget();
       const output = new Output({
-        format: new WebMOutputFormat(),
+        format: format === "mp4" ? new Mp4OutputFormat({ fastStart: "in-memory" }) : new WebMOutputFormat(),
         target: targetBuffer,
       });
       const videoSource = new CanvasSource(captureOutput, {
@@ -2071,30 +2411,28 @@ void (async () => {
         keyFrameInterval: 2,
       });
       output.addVideoTrack(videoSource, { frameRate: settings.fps });
-      const clipEffect = new EffectTransition(0);
-      const frameCount = settings.fps * CLIP_SECONDS;
+      const frameCount = settings.fps * settings.duration;
 
       try {
         await output.start();
         for (let index = 0; index < frameCount; index += 1) {
+          if (signal.aborted) throw new DOMException("Export canceled", "AbortError");
           const timestamp = index / settings.fps;
           const shaderTime = presentation.animationTime + (
             presentation.motionPaused ? 0 : timestamp * Number(presentation.params.speed)
           );
-          let effectProgress = 1;
-          if (!presentation.motionPaused) {
-            clipEffect.setTarget(effectLoopTarget(timestamp));
-            clipEffect.tick(index === 0 ? 0 : 1 / settings.fps);
-            effectProgress = clipEffect.value;
-          }
-          await renderCaptureFrame(presentation, shaderTime, effectProgress, width, height);
+          // Export the fully engaged hover treatment on every frame. The user
+          // cannot keep a pointer over a downloaded file, so an export-only
+          // reveal loop would silently replace the composition they approved.
+          await renderCaptureFrame(presentation, shaderTime, 1, width, height);
           await videoSource.add(timestamp, 1 / settings.fps, {
             keyFrame: index === 0 || index % (settings.fps * 2) === 0,
           });
 
           const encodeProgress = (index + 1) / frameCount;
           const percent = Math.round(encodeProgress * 100);
-          exportStatus.textContent = `Encoding a real 1280 × 720 clip… ${percent}%`;
+          exportStatus.textContent = `Encoding ${width} × ${height} ${format.toUpperCase()}… ${percent}%`;
+          setExportProgress(`Encoding ${format.toUpperCase()}`, encodeProgress);
           for (const button of recordButtons) button.textContent = `${percent}%`;
         }
         await output.finalize();
@@ -2105,11 +2443,25 @@ void (async () => {
         throw error;
       }
 
-      if (!targetBuffer.buffer) throw new Error("The WebM encoder produced no output.");
-      return new Blob([targetBuffer.buffer], { type: "video/webm" });
+      if (!targetBuffer.buffer) throw new Error(`The ${format.toUpperCase()} encoder produced no output.`);
+      return new Blob([targetBuffer.buffer], { type: format === "mp4" ? "video/mp4" : "video/webm" });
     }
 
-    async function recordClip(settings: VideoExportSettings): Promise<void> {
+    async function inspectEncodedClip(blob: Blob): Promise<{ codec: string; width: number; height: number; duration: number; color: VideoColorSpaceInit }> {
+      const input = new Input({ source: new BlobSource(blob), formats: ALL_FORMATS });
+      if (!(await input.canRead())) throw new Error("The encoded file could not be read back for verification.");
+      const track = await input.getPrimaryVideoTrack();
+      if (!track) throw new Error("The encoded file contains no video track.");
+      return {
+        codec: (await track.getCodec()) ?? "unknown",
+        width: await track.getCodedWidth(),
+        height: await track.getCodedHeight(),
+        duration: await input.computeDuration(),
+        color: await track.getColorSpace(),
+      };
+    }
+
+    async function recordClip(settings: VideoExportSettings, signal: AbortSignal): Promise<void> {
       if (pendingSourceSwap || pendingBlend) {
         announce("Wait for the new source to finish igniting before recording.");
         return;
@@ -2123,22 +2475,16 @@ void (async () => {
         announce("Finish the current export first.");
         return;
       }
-      if (webmCodecs.length === 0) {
-        const message = "Finalized WebM encoding is not available in this browser. PNG and JSON export still work.";
+      const selectedFormat = chooseVideoFormat(encodableVideoCodecs);
+      if (!selectedFormat) {
+        const message = "Video encoding is not available in this browser. Image export still works.";
         exportStatus.textContent = message;
         announce(message);
         return;
       }
       const [width, height] = videoDimensions(settings);
       const presentation = capturePresentation(width, height);
-      presentation.params = {
-        ...presentation.params,
-        offsetX: Number(presentation.params.offsetX) + settings.frameX * 0.18,
-        offsetY: Number(presentation.params.offsetY) + settings.frameY * 0.18,
-      };
-      presentation.sourceRect = presentation.source
-        ? getPresentationRect(presentation.sourceAspect, presentation.params, width, height)
-        : undefined;
+      applyExportFraming(presentation, settings, width, height);
       captureBusy = true;
       exportRecording = true;
       const previousDisabled = new Map(recordingMutators.map((control) => [control, control.disabled]));
@@ -2151,23 +2497,22 @@ void (async () => {
         exportStatus.textContent = "Preparing a real 1280 × 720 capture…";
         prepareCapture(presentation, width, height);
 
-        let video: Blob | undefined;
-        let lastError: unknown;
-        for (const codec of webmCodecs) {
-          try {
-            video = await encodeWebmClip(presentation, codec, settings, width, height);
-            break;
-          } catch (error) {
-            lastError = error;
-          }
+        if (selectedFormat.format === "webm") {
+          announce("MP4 is unavailable in this browser. Exporting a high-quality WebM instead.");
         }
-        if (!video) throw lastError ?? new Error("No compatible WebM encoder completed the clip.");
-
-        downloadBlob(video, `fayaaa-${settings.ratio.replace(":", "x")}-${settings.fps}fps.webm`);
-        exportStatus.textContent = `Finalized ${width} × ${height} WebM exported with the frozen composition.`;
-        announce("Three second Fayaaa clip exported as WebM");
+        const video = await encodeClip(presentation, selectedFormat.codec, selectedFormat.format, settings, width, height, signal);
+        if (signal.aborted) throw new DOMException("Export canceled", "AbortError");
+        setExportProgress("Verifying file", 0.98);
+        const verified = await inspectEncodedClip(video);
+        if (verified.codec !== selectedFormat.codec || verified.width !== width || verified.height !== height || Math.abs(verified.duration - settings.duration) > 1 / settings.fps) {
+          throw new Error("The encoded file did not match the requested export settings.");
+        }
+        downloadBlob(video, `fayaaa-${settings.ratio.replace(":", "x")}-${settings.fps}fps.${selectedFormat.format}`);
+        const color = verified.color.primaries ?? "sRGB";
+        exportStatus.textContent = `Verified ${verified.width} × ${verified.height} · ${settings.fps} FPS · ${verified.duration.toFixed(2)}s · ${verified.codec.toUpperCase()} ${selectedFormat.format.toUpperCase()} · ${color}.`;
+        announce(`${settings.duration} second Fayaaa clip exported as ${selectedFormat.format.toUpperCase()}`);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "WebM recording failed.";
+        const message = signal.aborted ? "Video export canceled." : error instanceof Error ? error.message : "Video export failed.";
         exportStatus.textContent = message;
         announce(message);
       } finally {
@@ -2181,9 +2526,8 @@ void (async () => {
       }
     }
 
-    for (const button of recordButtons) {
+    for (const button of document.querySelectorAll<HTMLButtonElement>("[data-open-export]")) {
       button.addEventListener("click", () => {
-        setToolbarMenuOpen(downloadPicker, false);
         openVideoExport();
       });
     }
@@ -2355,7 +2699,8 @@ void (async () => {
       }
 
       let effectTarget = 1;
-      if (pendingSourceSwap) effectTarget = 0;
+      if (videoExportOpen) effectTarget = 1;
+      else if (pendingSourceSwap) effectTarget = 0;
       else if (pendingBlend) effectTarget = 0;
       else if (logoReplayPhase !== "idle") {
         effectTarget = motionPaused ? effectTransition.value : 0;
@@ -2427,17 +2772,19 @@ void (async () => {
 
     void (async () => {
       try {
-        webmCodecs = await getEncodableVideoCodecs(["vp9", "vp8"], {
+        encodableVideoCodecs = await getEncodableVideoCodecs(["avc", "vp9", "vp8"], {
           width: EXPORT_WIDTH,
           height: EXPORT_HEIGHT,
           quality: new Quality({ bitrate: VIDEO_QUALITIES.high.bitrate, bitrateMode: "variable" }),
         });
+        webmCodecs = encodableVideoCodecs.filter((codec) => codec === "vp9" || codec === "vp8");
       } catch {
+        encodableVideoCodecs = [];
         webmCodecs = [];
       }
       if (disposed) return;
       updateExportDetails();
-      if (webmCodecs.length > 0) {
+      if (encodableVideoCodecs.length > 0) {
         for (const button of recordButtons) button.disabled = false;
         return;
       }
@@ -2484,8 +2831,8 @@ void (async () => {
     };
     const INTRO_WORD = {
       text: "fayaaa",
-      zoomFrom: 0.4,   // push-in start scale
-      zoomTo:   0.5,   // push-in end scale — constant linear drift
+      zoomFrom: 0.25,  // restrained opening size on portrait and desktop
+      zoomTo:   0.32,  // constant push-in, still intimate at the hold
       spacing:  1.7,   // signature spacing, opened up for the fire's glow
       penMin:   0.7,   // hairline on upstrokes (brush pressure), grid units
       penMax:   2.5,   // full weight on downstrokes
@@ -2501,7 +2848,7 @@ void (async () => {
     // the whole word phase, locked off for the burn-out, and a small
     // 60fps landing settle for the mark.
     const INTRO_CAMERA = {
-      markScale: 0.26, // the mark stays small and intimate during the reveal
+      markScale: 0.15, // the mark stays small and intimate during the reveal
       settle:    1.04, // tiny oversize it settles from while the fire wraps
       growMs:    1150, // then it grows into the dial size as the layout enters
     };
@@ -2520,9 +2867,14 @@ void (async () => {
     // the first pixel (solid ink, never a hollow rim), then blazes up.
     const INTRO_INK = {
       body: "#7e2508",            // ember ink body while writing
-      glow: [0.35, 0.85],         // glowIntensity: coal → blaze
-      inner: [0.85, 1.1],         // luminous fill without the white core
-      exposure: [0.1, 0.16],      // capped so the peak stays deep molten
+      spread: 0.008,               // tighter bloom for the smaller lettering
+      glow: [0.3, 0.72],          // glowIntensity: coal → controlled blaze
+      inner: [0.72, 0.95],        // luminous fill without swelling the stroke
+      exposure: [0.08, 0.13],     // capped so the smaller mark stays crisp
+      sheen: 0.68,                 // retain texture without a broad highlight
+      grain: 0.65,                 // scale texture energy with the smaller art
+      waver: 0.45,                 // fewer flame tongues around thin strokes
+      flicker: 0.55,               // calmer edge motion at the reduced scale
     } as const;                   // orange — never the pale hot-metal look
 
     // Single-stroke cursive glyphs from the public-domain Hershey "Script
@@ -2817,10 +3169,21 @@ void (async () => {
       const dialInnerGlow = Number(state.innerGlow);
       const dialSheen = Number(state.sheenStrength);
       const dialBaseColor = String(state.baseColor);
+      const dialBackgroundColor = String(state.bgColor);
       const dialExposure = Number(state.exposure);
       const dialTopLight = Number(state.topLight);
+      const dialGrain = Number(state.grainAmount);
+      const dialWaver = Number(state.waverAmount);
+      const dialFlicker = Number(state.flickerAmount);
       const easeInOutCubic = (t: number): number =>
         t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+      // Keep the intro intimate on wide desktop windows. The playground's
+      // final dial scale is unchanged; only the temporary intro camera pulls
+      // back as the viewport moves from landscape to full-width/ultrawide.
+      const viewportAspect = window.innerWidth / Math.max(1, window.innerHeight);
+      const wideProgress = Math.min(1, Math.max(0, (viewportAspect - 1.35) / 0.5));
+      const introScale = 1 - 0.18 * wideProgress * wideProgress * (3 - 2 * wideProgress);
+      const introMarkScale = INTRO_CAMERA.markScale * introScale;
       let skipped = false;
       const skip = () => {
         skipped = true;
@@ -2832,7 +3195,7 @@ void (async () => {
         window.addEventListener("keydown", skip, true);
       }, 400);
 
-      const restoreDialMaterial = () => {
+      const restoreDialMaterial = (restoreBackground = true) => {
         state.scale = dialScale;
         state.offsetX = dialOffsetX;
         state.offsetY = dialOffsetY;
@@ -2842,9 +3205,14 @@ void (async () => {
         state.innerGlow = dialInnerGlow;
         state.sheenStrength = dialSheen;
         state.baseColor = dialBaseColor;
+        if (restoreBackground) state.bgColor = dialBackgroundColor;
         state.exposure = dialExposure;
         state.topLight = dialTopLight;
+        state.grainAmount = dialGrain;
+        state.waverAmount = dialWaver;
+        state.flickerAmount = dialFlicker;
         currentPipeline.applyEmberParams(state);
+        if (restoreBackground) syncStageBackground();
       };
 
       try {
@@ -2863,11 +3231,20 @@ void (async () => {
         // evenly, and a lit body so the drawn line is SOLID ink from the
         // first pixel — never a hollow rim around empty dark.
         state.heatAngle = "full";
-        state.glowSpread = 0.001 + 23 * 0.0005; // the dials' Full pairing
+        // The intro is a temporary presentation with a true-black canvas,
+        // independent of the playground's selected background. Restore the
+        // selected color with the rest of the dial material on every exit.
+        state.bgColor = "#000000";
+        syncStageBackground();
+        state.glowSpread = INTRO_INK.spread;
         state.baseColor = INTRO_INK.body;
         state.glowIntensity = INTRO_INK.glow[0];
         state.innerGlow = INTRO_INK.inner[0];
         state.exposure = INTRO_INK.exposure[0];
+        state.sheenStrength = dialSheen * INTRO_INK.sheen;
+        state.grainAmount = dialGrain * INTRO_INK.grain;
+        state.waverAmount = dialWaver * INTRO_INK.waver;
+        state.flickerAmount = dialFlicker * INTRO_INK.flicker;
         state.offsetX = 0; // the intro frames its own subjects dead center
         state.offsetY = 0;
         currentPipeline.applyEmberParams(state);
@@ -2901,8 +3278,8 @@ void (async () => {
             // No pan, no reversal — the camera never draws attention.
             const pushT = Math.min(1, elapsed / wordSpan);
             const pushEased = 0.5 - 0.5 * Math.cos(Math.PI * pushT);
-            state.scale = INTRO_WORD.zoomFrom +
-              (INTRO_WORD.zoomTo - INTRO_WORD.zoomFrom) * pushEased;
+            state.scale = (INTRO_WORD.zoomFrom +
+              (INTRO_WORD.zoomTo - INTRO_WORD.zoomFrom) * pushEased) * introScale;
 
             // The heat-up: coals → full burn, blooming just after the pen
             // finishes its pass.
@@ -2978,7 +3355,12 @@ void (async () => {
           if (!skipped) await introSleep(INTRO_TIMING.blackGap);
         }
 
-        restoreDialMaterial();
+        // Do not restore the playground material between subjects. Even with
+        // the blank mask installed above, that intermediate full-energy GPU
+        // state can reach a compositor frame before the mark is zeroed,
+        // reading as a flash between the word and icon on some browsers.
+        // The captured dial values below are the icon's targets, so we can
+        // transition straight from the dead word into a zero-energy mark.
         const revealMark = await markPromise;
         if (disposed) return;
 
@@ -3002,21 +3384,37 @@ void (async () => {
         // wraps around its silhouette via a heat-direction sweep while the
         // material blooms up to the dials and the camera settles the
         // landing. Ends exactly on the user's dial state.
-        const targetGlow = Number(state.glowIntensity);
-        const targetInner = Number(state.innerGlow);
-        const targetExposure = Number(state.exposure);
-        const targetSheen = Number(state.sheenStrength);
+        const targetGlow = Number(dialGlowIntensity);
+        const targetInner = dialInnerGlow;
+        const targetExposure = dialExposure;
+        const targetSheen = Number(dialSheen);
+        const targetSpread = Number(dialGlowSpread);
+        const targetGrain = dialGrain;
+        const targetWaver = dialWaver;
+        const targetFlicker = dialFlicker;
+        const introMarkGlow = targetGlow * 0.5;
+        const introMarkInner = targetInner * 0.62;
+        const introMarkExposure = targetExposure * 0.72;
+        const introMarkSheen = targetSheen * 0.58;
+        const introMarkSpread = targetSpread * Math.max(0.5, introMarkScale / 0.26);
+        const introMarkGrain = targetGrain * INTRO_INK.grain;
+        const introMarkWaver = targetWaver * INTRO_INK.waver;
+        const introMarkFlicker = targetFlicker * INTRO_INK.flicker;
         const dialAngle = readHeatDirection(dialHeat);
         const landAngle = dialAngle === "full" ? Number(DEFAULTS.heatAngle) : dialAngle;
         state.glowIntensity = 0;
         state.innerGlow = 0;
         state.exposure = 0;
         state.sheenStrength = 0;
+        state.glowSpread = introMarkSpread;
+        state.grainAmount = introMarkGrain;
+        state.waverAmount = introMarkWaver;
+        state.flickerAmount = introMarkFlicker;
         // The body itself starts INVISIBLE: exactly the background color
         // with neutral topLight — no black silhouette before the flames.
         state.baseColor = String(state.bgColor);
         state.topLight = 1;
-        state.scale = INTRO_CAMERA.markScale * INTRO_CAMERA.settle;
+        state.scale = introMarkScale * INTRO_CAMERA.settle;
         effectIntent = "result";
         effectTransition.snap(1);
         currentPipeline.setEffectProgress(1);
@@ -3038,18 +3436,18 @@ void (async () => {
               ((((landAngle - wrapDegrees * (1 - easeInOutCubic(t)) - orbitTailDegrees * (1 - t)) % 360) + 360) % 360);
             const bloom = easeInOutCubic(t);
             const breath = 1 + INTRO_MARK.breath * Math.sin(Math.PI * t);
-            state.glowIntensity = targetGlow * bloom * breath;
+            state.glowIntensity = introMarkGlow * bloom * breath;
             // The icon's body glows from within during the sweep — a strong
             // inner surge that settles exactly onto the dial value at t=1.
-            state.innerGlow = targetInner * bloom * (1 + INTRO_MARK.innerSurge * Math.sin(Math.PI * t));
-            state.exposure = targetExposure * bloom;
-            state.sheenStrength = targetSheen * bloom;
+            state.innerGlow = introMarkInner * bloom * (1 + INTRO_MARK.innerSurge * Math.sin(Math.PI * t));
+            state.exposure = introMarkExposure * bloom;
+            state.sheenStrength = introMarkSheen * bloom;
             state.baseColor = mixHex(String(state.bgColor), dialBaseColor, bloom);
             state.topLight = 1 + (dialTopLight - 1) * bloom;
             // Small and intimate: the mark holds its reveal size, easing off
             // a hair of oversize while the fire wraps it.
             const settleEased = 1 - (1 - t) ** 3;
-            state.scale = INTRO_CAMERA.markScale *
+            state.scale = introMarkScale *
               (INTRO_CAMERA.settle + (1 - INTRO_CAMERA.settle) * settleEased);
             currentPipeline.applyEmberParams(state);
             currentPipeline.rebuild(state);
@@ -3066,10 +3464,10 @@ void (async () => {
           // mark is still SMALL here.
           state.heatAngle = dialHeat;
           heatCurrent = landAngle;
-          state.glowIntensity = targetGlow;
-          state.innerGlow = targetInner;
-          state.exposure = targetExposure;
-          state.sheenStrength = targetSheen;
+          state.glowIntensity = introMarkGlow;
+          state.innerGlow = introMarkInner;
+          state.exposure = introMarkExposure;
+          state.sheenStrength = introMarkSheen;
           state.baseColor = dialBaseColor;
           state.topLight = dialTopLight;
           effectIntent = "auto";
@@ -3087,7 +3485,7 @@ void (async () => {
           document.body.classList.remove("intro-playing");
           if (!skipped) {
             await new Promise<void>((resolve) => {
-              const grownFrom = INTRO_CAMERA.markScale;
+              const grownFrom = introMarkScale;
               const startedAt = performance.now();
               const grow = (now: number) => {
                 if (disposed || skipped) {
@@ -3095,9 +3493,18 @@ void (async () => {
                   return;
                 }
                 const t = Math.min(1, (now - startedAt) / INTRO_CAMERA.growMs);
-                const eased = 1 - (1 - t) ** 3;
-                state.scale = grownFrom + (dialScale - grownFrom) * eased;
-                currentPipeline.rebuild(state);
+              const eased = 1 - (1 - t) ** 3;
+              state.scale = grownFrom + (dialScale - grownFrom) * eased;
+              state.glowSpread = introMarkSpread + (targetSpread - introMarkSpread) * eased;
+              state.grainAmount = introMarkGrain + (targetGrain - introMarkGrain) * eased;
+              state.glowIntensity = introMarkGlow + (targetGlow - introMarkGlow) * eased;
+              state.innerGlow = introMarkInner + (targetInner - introMarkInner) * eased;
+              state.exposure = introMarkExposure + (targetExposure - introMarkExposure) * eased;
+              state.sheenStrength = introMarkSheen + (targetSheen - introMarkSheen) * eased;
+              state.waverAmount = introMarkWaver + (targetWaver - introMarkWaver) * eased;
+              state.flickerAmount = introMarkFlicker + (targetFlicker - introMarkFlicker) * eased;
+              currentPipeline.applyEmberParams(state);
+              currentPipeline.rebuild(state);
                 updateSourceBounds();
                 needsFrame = true;
                 if (t >= 1) resolve();
@@ -3108,6 +3515,15 @@ void (async () => {
           }
           if (!disposed) {
             state.scale = dialScale;
+            state.glowSpread = targetSpread;
+            state.grainAmount = targetGrain;
+            state.glowIntensity = targetGlow;
+            state.innerGlow = targetInner;
+            state.exposure = targetExposure;
+            state.sheenStrength = targetSheen;
+            state.waverAmount = targetWaver;
+            state.flickerAmount = targetFlicker;
+            currentPipeline.applyEmberParams(state);
             currentPipeline.rebuild(state);
             updateSourceBounds();
             needsFrame = true;
@@ -3185,6 +3601,7 @@ if (import.meta.hot) {
     stageObserver.disconnect();
     window.removeEventListener("resize", syncWindowSize);
     dialkitCleanup();
+    exportDialkitCleanup?.();
     mobileControlsCleanup();
     cancelAnimationFrame(audioPointerFrame);
     fireAudio.dispose();

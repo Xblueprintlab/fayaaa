@@ -29,7 +29,10 @@ fn presentResult(base: vec3f, input: EmberInput, p: EmberParams) -> vec4f {
     * mix(1.6, 0.3, clamp(p.edgeSharpness, 0.0, 1.0));
   let inside = smoothstep(aa, -aa, input.sd);
   let outerGlow = exp(-max(input.sd, 0.0) / max(p.glowSpread * 1.8, 1e-4));
-  let insideAmount = clamp(p.innerGlow * 0.5, 0.0, 1.0);
+  // Normal means normal: the fire body fully covers image and transparent
+  // backgrounds. Only an explicitly selected blend mode thins the body so the
+  // mix-blend layering has something to read through.
+  let insideAmount = select(clamp(p.innerGlow * 0.5, 0.0, 1.0), 1.0, g.blendMode < 0.5);
   let alpha = clamp(max(
     inside * insideAmount,
     outerGlow * (1.0 - inside) * min(p.glowIntensity * 0.22, 0.82),

@@ -132,18 +132,10 @@ export function mountPlayground(routePreviewUrl = "/sample-fire.png"): "image" {
             </div>
           </div>
 
-          <div class="download-control" data-toolbar-menu data-download-picker>
-            <button class="download-trigger" type="button" aria-label="Choose download format" aria-expanded="false">
+          <div class="download-control" data-download-picker>
+            <button class="download-trigger" type="button" data-open-export aria-label="Open export options">
               <span>Download</span>
             </button>
-            <div class="download-options" hidden>
-              <button class="download-option" type="button" data-export-frame>
-                Download image
-              </button>
-              <button class="download-option" type="button" data-record-clip>
-                Download video
-              </button>
-            </div>
           </div>
           </div>
             <img class="static-preview" src="${routePreviewUrl}" alt="" aria-hidden="true" />
@@ -217,48 +209,35 @@ export function mountPlayground(routePreviewUrl = "/sample-fire.png"): "image" {
     </div>
 
     <div class="video-export-modal" id="video-export-modal" role="dialog" aria-modal="true" aria-labelledby="video-export-title" hidden>
-      <div class="video-export-dialog">
+      <div class="video-export-dialog" tabindex="-1">
         <header class="video-export-header">
-          <h2 id="video-export-title">Export video</h2>
-          <button class="video-export-close" type="button" aria-label="Close video export">×</button>
+          <h2 id="video-export-title">Export</h2>
+          <button class="video-export-close" type="button" aria-label="Close export">
+            <svg aria-hidden="true" viewBox="0 0 16 16">
+              <path d="m4.25 4.25 7.5 7.5M11.75 4.25l-7.5 7.5" />
+            </svg>
+          </button>
         </header>
         <div class="video-export-layout">
           <div class="video-frame-wrap">
-            <canvas class="video-frame-preview" id="video-frame-preview" aria-label="Video framing preview"></canvas>
-            <span class="video-frame-hint">Drag to frame</span>
+            <canvas class="video-frame-preview" id="video-frame-preview" aria-label="Export framing preview. Drag to reposition."></canvas>
+            <div class="export-preview-chrome"><span>Drag to reframe</span></div>
+            <div class="export-progress" id="export-progress" role="status" hidden>
+              <span class="export-progress-spinner" aria-hidden="true"></span>
+              <strong id="export-progress-title">Preparing export</strong>
+              <span id="export-progress-detail">0%</span>
+              <progress id="export-progress-meter" max="100" value="0"></progress>
+            </div>
           </div>
           <div class="video-export-settings">
-            <fieldset>
-              <legend>Ratio</legend>
-              <div class="video-option-group" data-video-options="ratio">
-                <button type="button" data-video-ratio="16:9" aria-pressed="true">16:9</button>
-                <button type="button" data-video-ratio="1:1" aria-pressed="false">1:1</button>
-                <button type="button" data-video-ratio="9:16" aria-pressed="false">9:16</button>
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Frame rate</legend>
-              <div class="video-option-group" data-video-options="fps">
-                <button type="button" data-video-fps="24" aria-pressed="false">24 FPS</button>
-                <button type="button" data-video-fps="30" aria-pressed="true">30 FPS</button>
-                <button type="button" data-video-fps="60" aria-pressed="false">60 FPS</button>
-              </div>
-            </fieldset>
-            <fieldset>
-              <legend>Quality</legend>
-              <div class="video-quality-group" data-video-options="quality">
-                <button type="button" data-video-quality="standard" aria-pressed="false"><strong>Standard</strong><span>720p · 6 Mbps</span></button>
-                <button type="button" data-video-quality="high" aria-pressed="true"><strong>High</strong><span>1080p · 12 Mbps</span></button>
-                <button type="button" data-video-quality="max" aria-pressed="false"><strong>Max</strong><span>1440p · 24 Mbps</span></button>
-              </div>
-            </fieldset>
+            <div class="export-dialkit-mount" id="export-dialkit-root" aria-label="Export controls"></div>
           </div>
         </div>
         <footer class="video-export-footer">
-          <output id="video-export-summary">1920 × 1080 · 30 FPS</output>
+          <output id="video-export-summary" hidden>1920 × 1080 · PNG</output>
           <div>
             <button class="video-export-cancel" type="button">Cancel</button>
-            <button class="video-export-confirm" type="button">Export video</button>
+            <button class="video-export-confirm" type="button">Download image</button>
           </div>
         </footer>
       </div>

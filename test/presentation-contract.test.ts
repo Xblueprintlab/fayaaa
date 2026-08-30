@@ -14,9 +14,19 @@ const mainPath = fileURLToPath(
 const controlsPath = fileURLToPath(
   new URL("../src/dialkit-controls.tsx", import.meta.url),
 );
+const exportControlsPath = fileURLToPath(
+  new URL("../src/export-dialkit-controls.tsx", import.meta.url),
+);
+const pagePath = fileURLToPath(
+  new URL("../src/playground-page.ts", import.meta.url),
+);
+const appCssPath = fileURLToPath(
+  new URL("../src/app.css", import.meta.url),
+);
 const persistencePath = fileURLToPath(
   new URL("../src/playground-persistence.ts", import.meta.url),
 );
+const cssPath = fileURLToPath(new URL("../src/app.css", import.meta.url));
 
 it("returns canonical Fire exactly on a solid background and preserves alpha for compositions", () => {
   const source = readFileSync(compositePath, "utf8");
@@ -29,7 +39,9 @@ it("returns canonical Fire exactly on a solid background and preserves alpha for
   expect(source).toContain("presentResult(base, input, params)");
   expect(source).toContain("presentEdgeBurn(base, input, params)");
   expect(source).toContain("return vec4f(base * alpha, alpha);");
-  expect(source).toContain("let insideAmount = clamp(p.innerGlow * 0.5, 0.0, 1.0);");
+  expect(source).toContain(
+    "let insideAmount = select(clamp(p.innerGlow * 0.5, 0.0, 1.0), 1.0, g.blendMode < 0.5);",
+  );
   expect(source).toContain("outerGlow * (1.0 - inside)");
 });
 
@@ -72,10 +84,114 @@ it("persists controls, composition settings, and uploaded assets across refreshe
 it("resets only control parameters while preserving the subject and composition", () => {
   const controls = readFileSync(controlsPath, "utf8");
   const main = readFileSync(mainPath, "utf8");
+  expect(controls.indexOf("presets: {")).toBeLessThan(controls.indexOf("subject: {"));
+  expect(controls).toContain('action !== "presets.resetToDefault"');
   expect(controls).toContain('label: "Reset to default"');
-  expect(controls).toContain('controller.setValues(DEFAULT_CONTROL_VALUES)');
-  expect(main).toContain('action !== "resetToDefault"');
+  expect(controls).toContain('presets: { preset: selectedPreset }');
+  expect(main).toContain('action === "resetToDefault"');
   expect(main).toContain('announce("Parameters reset to default")');
+});
+
+it("offers complete showcase scenes without replacing the saved current setup", () => {
+  const controls = readFileSync(controlsPath, "utf8");
+  const main = readFileSync(mainPath, "utf8");
+  expect(controls).toContain('{ value: "current", label: PRESET_LABELS.current }');
+  expect(controls).toContain('{ value: "burning-painting", label: PRESET_LABELS["burning-painting"] }');
+  expect(controls).toContain('{ value: "violet-type", label: PRESET_LABELS["violet-type"] }');
+  expect(controls).toContain('{ value: "paper-flame", label: PRESET_LABELS["paper-flame"] }');
+  expect(main).toContain("captureCurrentSetup();");
+  expect(main).toContain('announce("Current setup restored")');
+  expect(main).not.toContain('deletePlaygroundAsset("subject")');
+  expect(main).not.toContain('deletePlaygroundAsset("background")');
+});
+
+it("burns the artwork as a subject instead of hanging it behind the fire", () => {
+  const main = readFileSync(mainPath, "utf8");
+  const sceneStart = main.indexOf('"burning-painting": {');
+  const sceneEnd = main.indexOf('"violet-type": {');
+  expect(sceneStart).toBeGreaterThan(-1);
+  const scene = main.slice(sceneStart, sceneEnd);
+  expect(scene).toContain('url: "/art-painting.jpg"');
+  expect(scene).toContain("supportsBurnAround: true");
+  expect(scene).toContain('background: { mode: "color"');
+  expect(scene).not.toContain('mode: "image"');
+});
+
+it("rasterizes vector subjects at full pipeline resolution instead of intrinsic size", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain('const isVector = blob.type === "image/svg+xml";');
+  expect(main).toContain("isVector ? max / largest : Math.min(1, max / largest)");
+});
+
+it("keeps the Normal fire body opaque over image and transparent backgrounds", () => {
+  const composite = readFileSync(compositePath, "utf8");
+  expect(composite).toContain(
+    "select(clamp(p.innerGlow * 0.5, 0.0, 1.0), 1.0, g.blendMode < 0.5)",
+  );
+});
+
+it("uses true black only for the intro and restores the playground background", () => {
+  const main = readFileSync(mainPath, "utf8");
+  const css = readFileSync(cssPath, "utf8");
+  expect(main).toContain("const dialBackgroundColor = String(state.bgColor);");
+  expect(main).toContain('state.bgColor = "#000000";');
+  expect(main).toMatch(/state\.bgColor = "#000000";\s*syncStageBackground\(\);/);
+  expect(main).toMatch(
+    /const restoreDialMaterial = \(restoreBackground = true\) => \{[\s\S]*?if \(restoreBackground\) state\.bgColor = dialBackgroundColor;[\s\S]*?currentPipeline\.applyEmberParams\(state\);\s*if \(restoreBackground\) syncStageBackground\(\);/,
+  );
+  expect(css).toMatch(/body\.intro-playing \{[\s\S]*?background: #000000;/);
+});
+
+it("pulls the intro camera back on wide viewports without changing the playground scale", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("zoomFrom: 0.25");
+  expect(main).toContain("zoomTo:   0.32");
+  expect(main).toContain("markScale: 0.15");
+  expect(main).toContain("const viewportAspect = window.innerWidth / Math.max(1, window.innerHeight);");
+  expect(main).toContain("const introScale = 1 - 0.18 * wideProgress * wideProgress * (3 - 2 * wideProgress);");
+  expect(main).toContain("const introMarkScale = INTRO_CAMERA.markScale * introScale;");
+  expect(main).toMatch(/state\.scale = \(INTRO_WORD\.zoomFrom \+[\s\S]*?\* introScale;/);
+  expect(main).toContain("const grownFrom = introMarkScale;");
+  expect(main).toContain("state.scale = grownFrom + (dialScale - grownFrom) * eased;");
+});
+
+it("tightens the intro material for smaller art and eases back to the dial material", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("spread: 0.008");
+  expect(main).toContain("const introMarkSpread = targetSpread * Math.max(0.5, introMarkScale / 0.26);");
+  expect(main).toContain("const introMarkGrain = targetGrain * INTRO_INK.grain;");
+  expect(main).toContain("const introMarkGlow = targetGlow * 0.5;");
+  expect(main).toContain("const introMarkWaver = targetWaver * INTRO_INK.waver;");
+  expect(main).toContain("state.glowSpread = introMarkSpread + (targetSpread - introMarkSpread) * eased;");
+  expect(main).toContain("state.grainAmount = introMarkGrain + (targetGrain - introMarkGrain) * eased;");
+  expect(main).toContain("state.glowIntensity = introMarkGlow + (targetGlow - introMarkGlow) * eased;");
+  expect(main).toContain("state.waverAmount = introMarkWaver + (targetWaver - introMarkWaver) * eased;");
+});
+
+it("keeps the word-to-icon handoff black without restoring an intermediate GPU state", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("const restoreDialMaterial = (restoreBackground = true) => {");
+  expect(main).toContain("if (restoreBackground) state.bgColor = dialBackgroundColor;");
+  expect(main).toMatch(
+    /if \(!skipped\) await introSleep\(INTRO_TIMING\.blackGap\);[\s\S]*?const revealMark = await markPromise;/,
+  );
+  expect(main).not.toContain("restoreDialMaterial(false)");
+  expect(main).toMatch(
+    /const targetGlow = Number\(dialGlowIntensity\);[\s\S]*?const targetFlicker = dialFlicker;/,
+  );
+  expect(main).toMatch(
+    /finally \{[\s\S]*?restoreDialMaterial\(\);[\s\S]*?document\.body\.classList\.remove\("intro-playing"\);/,
+  );
+});
+
+it("keeps the intro stage full-width on mobile", () => {
+  const css = readFileSync(cssPath, "utf8");
+  expect(css).toMatch(
+    /@media \(max-width: 900px\) \{[\s\S]*?body\.intro-playing \.playground-layout \{\s*grid-template-columns: minmax\(0, 1fr\);/,
+  );
+  expect(css).toMatch(
+    /@media \(max-width: 900px\) \{[\s\S]*?body\.intro-playing \.control-rail \{ display: none; \}/,
+  );
 });
 
 it("offers both image compositing treatments with a real raster sample", () => {
@@ -144,4 +260,36 @@ it("applies the shader blend mode consistently to the live canvas and exports", 
   expect(main).toMatch(
     /presentation\.backgroundMode !== "color" \|\|\s*\(presentation\.imageTreatment !== "edge" &&\s*presentation\.shaderBlend !== "source-over"\)/,
   );
+});
+
+it("exports the tuned composition with the hover treatment fully engaged", () => {
+  const main = readFileSync(mainPath, "utf8");
+  expect(main).toContain("const params = { ...state };");
+  expect(main).toContain("if (videoExportOpen) effectTarget = 1;");
+  expect(main).toContain("renderCaptureFrame(presentation, shaderTime, 1, width, height)");
+  expect(main).toContain("videoExportSettings.scale = 1;");
+  expect(main).not.toContain("const clipEffect = new EffectTransition(0)");
+});
+
+it("uses DialKit for export controls without leaking export panels into the playground rail", () => {
+  const exportControls = readFileSync(exportControlsPath, "utf8");
+  const main = readFileSync(mainPath, "utf8");
+  const page = readFileSync(pagePath, "utf8");
+  const css = readFileSync(appCssPath, "utf8");
+  expect(exportControls).toContain('useDialKitController("Output"');
+  expect(exportControls).toContain('useDialKitController("Video"');
+  expect(exportControls).toContain('<DialRoot mode="inline" theme="light"');
+  expect(main).toContain("function mountVideoExportControls(): void");
+  expect(main).toMatch(/videoExportModal\.hidden = false;[\s\S]*mountVideoExportControls\(\);/);
+  expect(main).toMatch(/videoExportModal\.hidden = true;[\s\S]*exportDialkitCleanup\?\.\(\);/);
+  expect(main).not.toContain("const exportDialkitCleanup = mountExportDialKit");
+  expect(page).toContain('id="export-dialkit-root"');
+  expect(page).not.toContain('id="export-scale"');
+  expect(page).not.toContain('export-format-note');
+  expect(page).toContain('m4.25 4.25 7.5 7.5M11.75 4.25l-7.5 7.5');
+  expect(css).toContain('.control-rail .dialkit-folder[data-dialkit-section="output"]');
+  expect(css).toContain('.export-dialkit-mount .dialkit-folder[data-dialkit-section="controls"]');
+  expect(css).toContain('.export-dialkit-mount .dialkit-panel-section-toolbar');
+  expect(css).toMatch(/data-dialkit-section="output"\] \{\s*border-top: 0 !important;/);
+  expect(css).toMatch(/\.download-trigger::after \{\s*display: none;\s*content: none;/);
 });
